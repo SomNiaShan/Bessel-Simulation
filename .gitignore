@@ -1,0 +1,22 @@
+# MATLAB
+*.asv
+*.mlx.autosave
+slprj/
+
+# Generated outputs
+*.tif
+*.tiff
+*.bmp
+*.gif
+outputs/*
+!outputs/.gitkeep
+
+# Experimental and office files
+*.czi
+*.mp4
+*.pptx
+~$*
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
