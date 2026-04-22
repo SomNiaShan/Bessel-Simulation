@@ -6,6 +6,7 @@ MATLAB simulation code for the Drill Beam project.
 
 - `src/BPM_drill_AI.m`: main FFT-BPM simulation script for generating the SLM phase and 3D beam output.
 - `docs/Bessel Beam.json`: auxiliary optical layout/configuration reference from the local project folder.
+- `docs/BPM_drill_AI_参数说明.md`: 中文参数说明清单，解释主要参数的含义、调节方向和注意事项。
 - `outputs/`: generated `.bmp` and `.tif` files written by the MATLAB script.
 
 ## Usage
