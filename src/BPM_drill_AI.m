@@ -52,7 +52,7 @@ params = struct(); % 新建最外层参数结构体
 params.simulation = struct( ... % 与数值仿真网格和传播步进有关的参数
     'N', 1081, ... % 横向采样点数，即 x-y 平面是 N x N 的网格
     'sizeMm', 8.64, ... % 横向计算窗口的物理尺寸，单位 mm
-    'zRangeMm', 400, ... % 沿 z 方向总共传播多远，单位 mm
+    'zRangeMm', 500, ... % 沿 z 方向总共传播多远，单位 mm
     'dzMm', 2, ... % 沿 z 方向每一步传播多远，单位 mm
     'useBPM', true, ... % 是否启用 BPM 传播；若为 false，则只返回输入场
     'useGPU', false); % 是否使用 GPU 进行传播计算
@@ -75,7 +75,7 @@ params.phase = struct( ... % 与相位构造有关的参数
     'axiconAngleDeg', 0.4, ... % axicon 底角，单位度
     'curvedMaxShiftMm', 0, ... % 曲线 Bessel 末端期望横向偏移量，单位 mm
     'compensationPhase', 0, ... % 额外补偿相位，目前默认关闭
-    'vortexCharge', 1, ... % 涡旋相位的拓扑荷数 l
+    'vortexCharge', 0, ... % 涡旋相位的拓扑荷数 l
     'helicalGamma', 1, ... % helical 相位的调制度
     'helicalOrder', 1, ... % helical 相位中的角向频率阶数 m
     'helicalPhaseOffset', 180, ... % helical 相位的初始相位偏置，单位度；代入公式前会转换为弧度
