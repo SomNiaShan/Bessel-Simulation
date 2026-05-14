@@ -9,14 +9,15 @@ classdef BPM_drill_AI_app < matlab.apps.AppBase
         Results
         ResultAxes
         RunButton
+        RunButtonIdleText
+        RunButtonIdleBackgroundColor
+        RunButtonIdleFontColor
         ResetButton
         OutputDirButton
-        LogFileButton
-        OpenOutputButton
-        RefreshLogButton
         StatusTextArea
         LogTextArea
         SummaryTextArea
+        IsRunning = false
     end
 
     methods (Access = public)
@@ -45,16 +46,16 @@ classdef BPM_drill_AI_app < matlab.apps.AppBase
         function createComponents(app)
             app.UIFigure = uifigure( ...
                 'Name', 'BPM Drill AI App', ...
-                'Position', [80 80 1320 780]);
+                'Position', [80 80 1380 820]);
 
             mainGrid = uigridlayout(app.UIFigure, [1 2]);
-            mainGrid.ColumnWidth = {440, '1x'};
+            mainGrid.ColumnWidth = {505, '1x'};
             mainGrid.RowHeight = {'1x'};
             mainGrid.Padding = [8 8 8 8];
             mainGrid.ColumnSpacing = 8;
 
             leftGrid = uigridlayout(mainGrid, [3 1]);
-            leftGrid.RowHeight = {'1x', 72, 130};
+            leftGrid.RowHeight = {'1x', 40, 130};
             leftGrid.Padding = [0 0 0 0];
             leftGrid.RowSpacing = 8;
 
@@ -63,25 +64,22 @@ classdef BPM_drill_AI_app < matlab.apps.AppBase
                 'N', 'N';
                 'sizeMm', 'sizeMm (mm)';
                 'zRangeMm', 'zRangeMm (mm)';
-                'dzMm', 'dzMm (mm)';
-                'useBPM', 'useBPM';
-                'useGPU', 'useGPU'});
+                'dzMm', 'dzMm (mm)'});
 
             app.addParameterTab(parameterTabs, 'laser', 'Laser', {
-                'wavelengthMm', 'wavelengthMm (mm)';
+                'wavelengthMm', 'Wavelength (nm)';
                 'powerW', 'powerW (W)';
-                'repetitionRateHz', 'repetitionRateHz (Hz)';
-                'pulseWidthS', 'pulseWidthS (s)'});
+                'repetitionRateHz', 'repetitionRateHz (kHz)';
+                'pulseWidthS', 'pulseWidthS (fs)'});
 
             app.addParameterTab(parameterTabs, 'beam', 'Beam', {
                 'waistRadiusMm', 'waistRadiusMm (mm)';
-                'fieldAmplitude', 'fieldAmplitude';
-                'beamRadiusCm', 'beamRadiusCm (cm)'});
+                'fieldAmplitude', 'fieldAmplitude'});
 
             app.addParameterTab(parameterTabs, 'phase', 'Phase', {
                 'airyStrength', 'airyStrength';
                 'airyScaleMm', 'airyScaleMm (mm)';
-                'axiconIndex', 'axiconIndex';
+                'axiconIndex', 'Axicon refractive index (n)';
                 'axiconAngleDeg', 'axiconAngleDeg (deg)';
                 'curvedMaxShiftMm', 'curvedMaxShiftMm (mm)';
                 'compensationPhase', 'compensationPhase';
@@ -96,6 +94,7 @@ classdef BPM_drill_AI_app < matlab.apps.AppBase
                 'lens1FocalLengthMm', 'lens1FocalLengthMm (mm)';
                 'lens2FocalLengthMm', 'lens2FocalLengthMm (mm)';
                 'lens1PositionMm', 'lens1PositionMm (mm)';
+                'lens2PositionMm', 'lens2PositionMm (mm)';
                 'sampleOffsetFromLens2Mm', 'sampleOffsetFromLens2Mm (mm)';
                 'lens1Enabled', 'lens1Enabled';
                 'lens2Enabled', 'lens2Enabled';
@@ -126,41 +125,32 @@ classdef BPM_drill_AI_app < matlab.apps.AppBase
                 'referenceSliceIndex', 'referenceSliceIndex';
                 'printProgress', 'printProgress';
                 'progressIntervalSeconds', 'progressIntervalSeconds (s)';
-                'writeProgressLog', 'writeProgressLog';
-                'progressLogFile', 'progressLogFile';
                 'outputDir', 'outputDir'});
 
-            buttonGrid = uigridlayout(leftGrid, [2 3]);
-            buttonGrid.RowHeight = {32, 32};
+            buttonGrid = uigridlayout(leftGrid, [1 3]);
+            buttonGrid.RowHeight = {32};
             buttonGrid.ColumnWidth = {'1x', '1x', '1x'};
             buttonGrid.Padding = [0 0 0 0];
-            buttonGrid.RowSpacing = 6;
             buttonGrid.ColumnSpacing = 6;
 
             app.RunButton = uibutton(buttonGrid, 'push', ...
                 'Text', 'Run', ...
                 'ButtonPushedFcn', @(~, ~)app.runButtonPushed());
+            app.RunButtonIdleText = app.RunButton.Text;
+            app.RunButtonIdleBackgroundColor = app.RunButton.BackgroundColor;
+            app.RunButtonIdleFontColor = app.RunButton.FontColor;
             app.ResetButton = uibutton(buttonGrid, 'push', ...
                 'Text', 'Defaults', ...
                 'ButtonPushedFcn', @(~, ~)app.resetButtonPushed());
-            app.OpenOutputButton = uibutton(buttonGrid, 'push', ...
-                'Text', 'Open Output', ...
-                'ButtonPushedFcn', @(~, ~)app.openOutputButtonPushed());
             app.OutputDirButton = uibutton(buttonGrid, 'push', ...
                 'Text', 'Output Dir', ...
                 'ButtonPushedFcn', @(~, ~)app.outputDirButtonPushed());
-            app.LogFileButton = uibutton(buttonGrid, 'push', ...
-                'Text', 'Log File', ...
-                'ButtonPushedFcn', @(~, ~)app.logFileButtonPushed());
-            app.RefreshLogButton = uibutton(buttonGrid, 'push', ...
-                'Text', 'Refresh Log', ...
-                'ButtonPushedFcn', @(~, ~)app.refreshLogButtonPushed());
 
             app.StatusTextArea = uitextarea(leftGrid, 'Editable', 'off');
 
             rightTabs = uitabgroup(mainGrid);
-            inputTab = uitab(rightTabs, 'Title', 'Input and phase');
             propagationTab = uitab(rightTabs, 'Title', 'Propagation');
+            inputTab = uitab(rightTabs, 'Title', 'Input and phase');
             summaryTab = uitab(rightTabs, 'Title', 'Summary and log');
 
             inputGrid = uigridlayout(inputTab, [2 3]);
@@ -221,40 +211,62 @@ classdef BPM_drill_AI_app < matlab.apps.AppBase
             end
 
             rowCount = size(specs, 1);
-            grid = uigridlayout(panel, [rowCount 2]);
+            grid = uigridlayout(panel, [rowCount 3]);
             grid.RowHeight = repmat({30}, 1, rowCount);
-            grid.ColumnWidth = {190, '1x'};
+            grid.ColumnWidth = {190, 20, '1x'};
             grid.Padding = [0 0 0 0];
             grid.RowSpacing = 5;
-            grid.ColumnSpacing = 8;
+            grid.ColumnSpacing = 6;
+            try
+                grid.Scrollable = 'on';
+            catch
+            end
 
             for index = 1:rowCount
                 fieldName = specs{index, 1};
                 labelText = specs{index, 2};
                 value = app.Params.(groupName).(fieldName);
-                tooltip = sprintf('params.%s.%s', groupName, fieldName);
+                tooltip = app.controlTooltip(groupName, fieldName);
+                displayValue = app.paramValueToControlValue(groupName, fieldName, value);
 
                 label = uilabel(grid, 'Text', labelText, 'Tooltip', tooltip);
                 label.HorizontalAlignment = 'right';
+                label.Layout.Row = index;
+                label.Layout.Column = 1;
+
+                infoLabel = uilabel(grid, 'Text', 'i', 'Tooltip', tooltip);
+                infoLabel.HorizontalAlignment = 'center';
+                infoLabel.FontWeight = 'bold';
+                infoLabel.FontColor = [0.2 0.45 0.85];
+                infoLabel.Layout.Row = index;
+                infoLabel.Layout.Column = 2;
 
                 if islogical(value)
-                    control = uicheckbox(grid, 'Text', '', 'Value', value, 'Tooltip', tooltip);
+                    control = uicheckbox(grid, 'Text', '', 'Value', logical(displayValue), 'Tooltip', tooltip);
                 elseif ischar(value) || isstring(value)
-                    control = uieditfield(grid, 'text', 'Value', char(string(value)), 'Tooltip', tooltip);
+                    control = uieditfield(grid, 'text', 'Value', char(string(displayValue)), 'Tooltip', tooltip);
                 else
-                    control = uieditfield(grid, 'numeric', 'Value', double(value), 'Tooltip', tooltip);
+                    control = uieditfield(grid, 'numeric', 'Value', double(displayValue), 'Tooltip', tooltip);
                     control.ValueDisplayFormat = '%.12g';
                 end
+                control.Layout.Row = index;
+                control.Layout.Column = 3;
 
                 app.Controls.(app.controlKey(groupName, fieldName)) = control;
             end
         end
 
         function runButtonPushed(app)
+            if app.IsRunning
+                return;
+            end
             app.setRunningState(true);
             runStarted = tic;
             try
                 params = app.collectParams();
+                displayOutputDir = params.output.outputDir;
+                params.output.writeProgressLog = false;
+                params.output.progressLogFile = '';
                 app.LogTextArea.Value = {'Run started. Waiting for progress messages...'};
                 params.runtimeProgressCallback = @(message)app.appendLog(message);
                 app.appendStatus(sprintf('Run started: %s', char(datetime('now', 'Format', 'yyyy-MM-dd HH:mm:ss'))));
@@ -266,15 +278,14 @@ classdef BPM_drill_AI_app < matlab.apps.AppBase
                 end
                 app.Results = results;
                 app.Params = results.params;
+                app.Params.output.outputDir = displayOutputDir;
                 app.populateControls(app.Params);
                 app.updateResultPreview(results);
                 app.updateSummary(results);
-                app.refreshLogButtonPushed();
 
                 assignin('base', 'BPM_drill_AI_app_results', results);
                 assignin('base', 'BPM_drill_AI_app_params', app.Params);
                 app.appendStatus(sprintf('Run finished in %.2f s.', toc(runStarted)));
-                app.appendStatus(sprintf('Output directory: %s', app.Params.output.outputDir));
             catch ME
                 app.appendStatus(sprintf('ERROR: %s', ME.message));
                 uialert(app.UIFigure, getReport(ME, 'extended', 'hyperlinks', 'off'), 'BPM Drill AI App');
@@ -301,62 +312,6 @@ classdef BPM_drill_AI_app < matlab.apps.AppBase
             app.appendStatus(sprintf('Output directory set: %s', selectedFolder));
         end
 
-        function logFileButtonPushed(app)
-            currentValue = app.getTextControlValue('output', 'progressLogFile');
-            if strlength(string(currentValue)) == 0
-                currentValue = fullfile(app.getTextControlValue('output', 'outputDir'), 'BPM_drill_AI_progress.log');
-            end
-            [fileName, pathName] = uiputfile({'*.log;*.txt', 'Log files (*.log, *.txt)'; '*.*', 'All files'}, ...
-                'Select progress log file', currentValue);
-            if isequal(fileName, 0)
-                return;
-            end
-            logFile = fullfile(pathName, fileName);
-            app.Controls.(app.controlKey('output', 'progressLogFile')).Value = logFile;
-            app.appendStatus(sprintf('Progress log file set: %s', logFile));
-        end
-
-        function openOutputButtonPushed(app)
-            params = app.collectParams();
-            outputDir = params.output.outputDir;
-            if strlength(string(outputDir)) == 0
-                outputDir = BPM_drill_AI_app_engine('defaults');
-                outputDir = outputDir.output.outputDir;
-            end
-            if exist(outputDir, 'dir') ~= 7
-                mkdir(outputDir);
-            end
-
-            if ispc
-                winopen(outputDir);
-            else
-                web(outputDir, '-browser');
-            end
-            app.appendStatus(sprintf('Opened output directory: %s', outputDir));
-        end
-
-        function refreshLogButtonPushed(app)
-            params = app.collectParams();
-            logFile = params.output.progressLogFile;
-            if strlength(string(logFile)) == 0
-                defaults = BPM_drill_AI_app_engine('defaults');
-                logFile = defaults.output.progressLogFile;
-            end
-
-            if exist(logFile, 'file') ~= 2
-                app.LogTextArea.Value = {sprintf('Log file does not exist yet: %s', logFile)};
-                return;
-            end
-
-            logText = string(fileread(logFile));
-            logLines = splitlines(logText);
-            logLines(logLines == "") = [];
-            if numel(logLines) > 300
-                logLines = logLines(end-299:end);
-            end
-            app.LogTextArea.Value = cellstr(logLines);
-        end
-
         function params = collectParams(app)
             params = app.Params;
             groups = app.groupNames();
@@ -377,7 +332,7 @@ classdef BPM_drill_AI_app < matlab.apps.AppBase
                     elseif ischar(oldValue) || isstring(oldValue)
                         params.(groupName).(fieldName) = char(string(control.Value));
                     else
-                        params.(groupName).(fieldName) = control.Value;
+                        params.(groupName).(fieldName) = app.controlValueToParamValue(groupName, fieldName, control.Value);
                     end
                 end
             end
@@ -385,6 +340,8 @@ classdef BPM_drill_AI_app < matlab.apps.AppBase
         end
 
         function params = normalizeAndValidateParams(app, params)
+            params.simulation.useBPM = true;
+
             integerFields = {
                 'simulation', 'N';
                 'output', 'cropHalfWidthPixels';
@@ -412,8 +369,17 @@ classdef BPM_drill_AI_app < matlab.apps.AppBase
             if params.simulation.sizeMm <= 0 || params.simulation.dzMm <= 0 || params.simulation.zRangeMm < 0
                 error('Simulation sizeMm and dzMm must be positive, and zRangeMm must be nonnegative.');
             end
+            if params.laser.wavelengthMm <= 0
+                error('Wavelength must be positive.');
+            end
             if params.phase.airyScaleMm == 0
                 error('params.phase.airyScaleMm must be nonzero.');
+            end
+            if params.phase.axiconIndex <= 0
+                error('Axicon refractive index must be positive.');
+            end
+            if params.optics.lens1FocalLengthMm <= 0 || params.optics.lens2FocalLengthMm <= 0
+                error('Lens focal lengths must be positive.');
             end
             if params.output.helicalOffsetStepDeg == 0
                 error('params.output.helicalOffsetStepDeg must be nonzero.');
@@ -448,7 +414,7 @@ classdef BPM_drill_AI_app < matlab.apps.AppBase
                     elseif ischar(value) || isstring(value)
                         control.Value = char(string(value));
                     else
-                        control.Value = double(value);
+                        control.Value = double(app.paramValueToControlValue(groupName, fieldName, value));
                     end
                 end
             end
@@ -466,31 +432,37 @@ classdef BPM_drill_AI_app < matlab.apps.AppBase
                 results.postprocess.zImageMm, ...
                 results.postprocess.yImageMm, ...
                 results.postprocess.crossSectionPeakPowerDensityLog, ...
-                'Peak power density log scale', results);
+                'Center y-z peak power density log scale', results);
 
             app.showCrossSection(app.ResultAxes.peakLinear, ...
                 results.postprocess.zImageMm, ...
                 results.postprocess.yImageMm, ...
                 results.postprocess.crossSectionPeakPowerDensityWPerMm2, ...
-                'Peak power density (W/mm^2)', results);
+                'Center y-z peak power density (W/mm^2)', results);
 
             ax = app.ResultAxes.onAxis;
-            cla(ax);
-            plot(ax, results.postprocess.zImageMm, results.postprocess.onAxisPeakPowerDensityWPerMm2);
+            app.clearAxesForRedraw(ax);
+            plot(ax, results.postprocess.zImageMm, results.postprocess.onAxisPeakPowerDensityWPerMm2, ...
+                'DisplayName', 'On-axis');
             hold(ax, 'on');
-            yline(ax, results.postprocess.thresholdWPerMm2, 'Color', 'r');
-            hold(ax, 'off');
-            title(ax, 'On-axis peak power density');
+            plot(ax, results.postprocess.zImageMm, results.postprocess.slicePeakPowerDensityWPerMm2, ...
+                '--', 'DisplayName', 'Slice peak');
+            yline(ax, results.postprocess.thresholdWPerMm2, 'Color', 'r', 'DisplayName', 'Threshold');
+            title(ax, 'On-axis and slice-peak power density');
             xlabel(ax, 'z (mm)');
             ylabel(ax, 'W/mm^2');
             xlim(ax, [min(results.postprocess.zImageMm), max(results.postprocess.zImageMm)]);
-            peakPowerDensity = max(results.postprocess.onAxisPeakPowerDensityWPerMm2);
+            peakPowerDensity = max([results.postprocess.onAxisPeakPowerDensityWPerMm2(:); results.postprocess.slicePeakPowerDensityWPerMm2(:)]);
             if isfinite(peakPowerDensity) && peakPowerDensity > 0
                 ylim(ax, [0, peakPowerDensity * 1.5]);
             end
+            app.plotActiveMarkers(ax, results);
+            app.addBlankColorbarSlot(ax);
+            hold(ax, 'off');
+            legend(ax, 'Location', 'northeast');
         end
 
-        function showImage(app, ax, data, titleText)
+        function showImage(~, ax, data, titleText)
             cla(ax);
             imagesc(ax, data);
             axis(ax, 'image');
@@ -500,28 +472,92 @@ classdef BPM_drill_AI_app < matlab.apps.AppBase
         end
 
         function showCrossSection(app, ax, zValues, yValues, data, titleText, results)
-            cla(ax);
+            app.clearAxesForRedraw(ax);
             imagesc(ax, zValues, yValues, data);
             axis(ax, 'on');
             title(ax, titleText);
             xlabel(ax, 'z (mm)');
             ylabel(ax, 'y (mm)');
             colorbar(ax);
+            xlim(ax, [min(zValues), max(zValues)]);
+            ylim(ax, [min(yValues), max(yValues)]);
             app.plotActiveMarkers(ax, results);
+        end
+
+        function clearAxesForRedraw(~, ax)
+            delete(findall(ax, 'Type', 'ConstantLine'));
+            cla(ax);
+        end
+
+        function addBlankColorbarSlot(~, ax)
+            slotColor = ax.Color;
+            figureHandle = ancestor(ax, 'figure');
+            if ~isempty(figureHandle) && isnumeric(figureHandle.Color) && numel(figureHandle.Color) == 3
+                slotColor = figureHandle.Color;
+            end
+            if ~isnumeric(slotColor) || numel(slotColor) ~= 3
+                slotColor = [0 0 0];
+            end
+
+            try
+                colormap(ax, repmat(slotColor, 256, 1));
+            catch
+            end
+
+            colorbarHandle = colorbar(ax);
+            colorbarHandle.Limits = [0 1];
+            colorbarHandle.Ticks = linspace(0, 1, 6);
+            colorbarHandle.TickLabels = {'0', '2', '4', '6', '8', '10'};
+            colorbarHandle.Color = slotColor;
+            colorbarHandle.Box = 'off';
+            colorbarHandle.Label.String = '';
         end
 
         function plotActiveMarkers(app, ax, results)
             hold(ax, 'on');
             if results.params.optics.lens1Enabled
-                xline(ax, results.derived.optics.lens1PositionMm, 'Color', 'r');
+                app.plotNamedMarker(ax, results.derived.optics.lens1PositionMm, 'lens1', 'r', 1);
             end
             if results.params.optics.lens2Enabled
-                xline(ax, results.derived.optics.lens2PositionMm, 'Color', 'r');
+                app.plotNamedMarker(ax, results.derived.optics.lens2PositionMm, 'lens2', 'r', 1);
             end
             if results.params.optics.sampleEnabled
-                xline(ax, results.derived.optics.samplePositionMm, 'Color', 'w');
+                app.plotNamedMarker(ax, results.derived.optics.samplePositionMm, 'sample', 'w', 2);
             end
             hold(ax, 'off');
+        end
+
+        function plotNamedMarker(app, ax, zPositionMm, labelText, markerColor, labelSlot)
+            xline(ax, zPositionMm, 'Color', markerColor, 'HandleVisibility', 'off');
+            yPosition = app.markerLabelY(ax, labelSlot);
+            text(ax, zPositionMm, yPosition, labelText, ...
+                'Color', [1 1 1], ...
+                'BackgroundColor', [0 0 0], ...
+                'FontWeight', 'bold', ...
+                'HorizontalAlignment', 'center', ...
+                'VerticalAlignment', 'middle', ...
+                'Rotation', 90, ...
+                'Margin', 1, ...
+                'Clipping', 'on', ...
+                'HitTest', 'off', ...
+                'Interpreter', 'none');
+        end
+
+        function yPosition = markerLabelY(~, ax, labelSlot)
+            yLimits = ylim(ax);
+            ySpan = diff(yLimits);
+            if ~isfinite(ySpan) || ySpan == 0
+                ySpan = 1;
+            end
+
+            labelFractions = [0.18, 0.34, 0.50];
+            labelSlot = max(1, min(labelSlot, numel(labelFractions)));
+            labelOffset = labelFractions(labelSlot) * ySpan;
+            if strcmpi(ax.YDir, 'reverse')
+                yPosition = yLimits(1) + labelOffset;
+            else
+                yPosition = yLimits(2) - labelOffset;
+            end
         end
 
         function updateSummary(app, results)
@@ -531,13 +567,21 @@ classdef BPM_drill_AI_app < matlab.apps.AppBase
                 sprintf('Grid: N=%d, size=%.12g mm, zRange=%.12g mm, dz=%.12g mm', ...
                     results.params.simulation.N, results.params.simulation.sizeMm, ...
                     results.params.simulation.zRangeMm, results.params.simulation.dzMm);
+                sprintf('Wavelength: %.12g nm', app.mmToNm(results.params.laser.wavelengthMm));
+                sprintf('Axicon refractive index: %.12g', results.params.phase.axiconIndex);
                 sprintf('Z slices: %d', numel(results.propagation.zValuesMm));
                 sprintf('Pulse peak power: %.12g W', results.derived.pulsePeakPowerW);
                 sprintf('beta0=%.12g deg, beta1=%.12g deg, betaMaterial=%.12g deg', ...
                     results.derived.optics.beta0Deg, results.derived.optics.beta1Deg, ...
                     results.derived.optics.betaMaterialDeg);
                 sprintf('Reference slice index: %d', results.postprocess.referenceSliceIndex);
-                sprintf('Progress log: %s', results.params.output.progressLogFile)};
+                sprintf('Center pixel: row=%d, col=%d, x=%.12g mm, y=%.12g mm', ...
+                    results.postprocess.centerRowIndex, results.postprocess.centerColumnIndex, ...
+                    results.postprocess.centerXMm, results.postprocess.centerYMm);
+                sprintf('On-axis max: %.12g W/mm^2 at z=%.12g mm', ...
+                    results.postprocess.onAxisMaxPeakPowerDensityWPerMm2, results.postprocess.onAxisMaxZMm);
+                sprintf('Slice-peak max: %.12g W/mm^2 at z=%.12g mm', ...
+                    results.postprocess.sliceMaxPeakPowerDensityWPerMm2, results.postprocess.sliceMaxZMm)};
             app.SummaryTextArea.Value = lines;
         end
 
@@ -554,7 +598,15 @@ classdef BPM_drill_AI_app < matlab.apps.AppBase
                 currentLines = currentLines(end-79:end);
             end
             app.StatusTextArea.Value = cellstr(currentLines);
+            app.scrollTextAreaToBottom(app.StatusTextArea);
             drawnow limitrate;
+        end
+
+        function scrollTextAreaToBottom(~, textArea)
+            try
+                scroll(textArea, 'bottom');
+            catch
+            end
         end
 
         function appendLog(app, message)
@@ -574,11 +626,18 @@ classdef BPM_drill_AI_app < matlab.apps.AppBase
         end
 
         function setRunningState(app, isRunning)
+            app.IsRunning = isRunning;
             if isRunning
-                app.RunButton.Enable = 'off';
+                app.RunButton.Enable = 'on';
+                app.RunButton.Text = 'Running...';
+                app.RunButton.BackgroundColor = [1.0 0.78 0.12];
+                app.RunButton.FontColor = [0.05 0.05 0.05];
                 app.ResetButton.Enable = 'off';
             else
                 app.RunButton.Enable = 'on';
+                app.RunButton.Text = app.RunButtonIdleText;
+                app.RunButton.BackgroundColor = app.RunButtonIdleBackgroundColor;
+                app.RunButton.FontColor = app.RunButtonIdleFontColor;
                 app.ResetButton.Enable = 'on';
             end
             drawnow limitrate;
@@ -589,11 +648,198 @@ classdef BPM_drill_AI_app < matlab.apps.AppBase
             value = char(string(control.Value));
         end
 
-        function key = controlKey(app, groupName, fieldName)
+        function key = controlKey(~, groupName, fieldName)
             key = sprintf('%s__%s', groupName, fieldName);
         end
 
-        function groups = groupNames(app)
+        function tooltip = controlTooltip(app, groupName, fieldName)
+            description = app.parameterDescription(groupName, fieldName);
+            tooltip = description;
+            if app.isWavelengthControl(groupName, fieldName)
+                tooltip = sprintf('%s\nDisplayed in nm; stored internally in mm.', tooltip);
+            elseif app.isRepetitionRateControl(groupName, fieldName)
+                tooltip = sprintf('%s\nDisplayed in kHz; stored internally in Hz.', tooltip);
+            elseif app.isPulseWidthControl(groupName, fieldName)
+                tooltip = sprintf('%s\nDisplayed in fs; stored internally in s.', tooltip);
+            end
+        end
+
+        function description = parameterDescription(~, groupName, fieldName)
+            paramPath = sprintf('%s.%s', groupName, fieldName);
+            switch paramPath
+                case 'simulation.N'
+                    description = 'Number of transverse samples. The computational plane is N x N; larger values improve resolution but increase runtime and memory use.';
+                case 'simulation.sizeMm'
+                    description = 'Physical width of the transverse simulation window, in mm. Larger values show a wider field; smaller values sample the center more densely.';
+                case 'simulation.zRangeMm'
+                    description = 'Total propagation distance along z, in mm. This controls how much axial evolution is simulated and exported.';
+                case 'simulation.dzMm'
+                    description = 'BPM propagation step size along z, in mm. Smaller values give more propagation detail but run more slowly.';
+
+                case 'laser.wavelengthMm'
+                    description = 'Laser wavelength. It affects the wave number, phase maps, propagation kernel, and propagation scale inside the sample.';
+                case 'laser.powerW'
+                    description = 'Average laser power used for peak-power-density estimates in post-processing. It does not change the normalized field shape.';
+                case 'laser.repetitionRateHz'
+                    description = 'Pulse repetition rate. At fixed average power, a higher repetition rate gives lower energy per pulse.';
+                case 'laser.pulseWidthS'
+                    description = 'Pulse duration used to estimate peak power. Shorter pulses give higher estimated peak power.';
+
+                case 'beam.waistRadiusMm'
+                    description = 'Input Gaussian beam waist radius, in mm. This controls the incident spot size and initial intensity envelope.';
+                case 'beam.fieldAmplitude'
+                    description = 'Scale factor for the input field amplitude. It scales the complex field amplitude and is mainly useful for quick debugging.';
+                case 'phase.airyStrength'
+                    description = 'Strength of the cubic Airy phase term. Set to 0 to disable the Airy phase.';
+                case 'phase.airyScaleMm'
+                    description = 'Transverse scale of the Airy phase, in mm. This controls how quickly the cubic phase changes with position.';
+                case 'phase.axiconIndex'
+                    description = 'Refractive index of the axicon, used for axicon and Bessel-beam angle calculations.';
+                case 'phase.axiconAngleDeg'
+                    description = 'Axicon base angle, in degrees. This controls the radial linear phase and approximate non-diffracting propagation distance.';
+                case 'phase.curvedMaxShiftMm'
+                    description = 'Target lateral shift at the end of the curved Bessel trajectory. Set to 0 to disable the curved trajectory.';
+                case 'phase.compensationPhase'
+                    description = 'Extra compensation phase hook. It is currently applied as an additional global phase term.';
+                case 'phase.vortexCharge'
+                    description = 'Topological charge l for the vortex phase. Set to 0 to disable the vortex phase.';
+                case 'phase.helicalGamma'
+                    description = 'Modulation depth of the helical phase term. This controls the strength of the helical contribution.';
+                case 'phase.helicalOrder'
+                    description = 'Angular order m of the helical phase. This controls the number of angular periods around one full turn.';
+                case 'phase.helicalPhaseOffset'
+                    description = 'Initial angular offset of the helical phase, in degrees. Batch scans vary this parameter.';
+                case 'phase.omegaInner'
+                    description = 'Radial chirp frequency parameter near the center. This affects phase oscillation near the beam axis.';
+                case 'phase.omegaOuter'
+                    description = 'Radial chirp frequency parameter near the edge. Together with omegaInner, it sets the radial frequency sweep.';
+
+                case 'optics.lens1FocalLengthMm'
+                    description = 'Focal length of lens 1, in mm.';
+                case 'optics.lens2FocalLengthMm'
+                    description = 'Focal length of lens 2, in mm.';
+                case 'optics.lens1PositionMm'
+                    description = 'z position of lens 1, in mm. BPM applies the lens-1 phase when propagation reaches this position.';
+                case 'optics.lens2PositionMm'
+                    description = 'z position of lens 2, in mm. BPM applies the lens-2 phase when propagation reaches this position.';
+                case 'optics.sampleOffsetFromLens2Mm'
+                    description = 'Distance from lens 2 to the sample, in mm. This is used to compute where sample propagation begins.';
+                case 'optics.lens1Enabled'
+                    description = 'Applies lens 1 during BPM propagation. When off, the parameter is kept but the lens phase is not applied.';
+                case 'optics.lens2Enabled'
+                    description = 'Applies lens 2 during BPM propagation. When off, the lens-2 phase is not applied.';
+                case 'optics.sampleEnabled'
+                    description = 'Switches BPM propagation to the sample refractive index at the sample position. When off, propagation stays in the background medium.';
+
+                case 'material.backgroundIndex'
+                    description = 'Background refractive index used for the background wave number and phase calculations.';
+                case 'material.sampleIndex'
+                    description = 'Sample refractive index used after propagation switches into the sample medium.';
+                case 'material.damageThresholdWPerM2'
+                    description = 'Material damage threshold, in W/m^2. It is used as a reference threshold line in result plots.';
+
+                case 'output.write3DIntensity'
+                    description = 'Exports the 3D intensity stack as a multipage TIFF. If BPM is off, only one z=0 slice is available.';
+                case 'output.writeAllPhase'
+                    description = 'Exports the total SLM phase bitmap after all enabled phase terms have been combined.';
+                case 'output.writeHelicalPhase'
+                    description = 'Exports only the helical phase bitmap, useful for checking the helical term by itself.';
+                case 'output.writeHelicalOffsetSlmBatch'
+                    description = 'Batch-scans helicalPhaseOffset and exports one total SLM phase bitmap per offset.';
+                case 'output.helicalOffsetStartDeg'
+                    description = 'Start angle for the helicalPhaseOffset batch scan, in degrees.';
+                case 'output.helicalOffsetEndDeg'
+                    description = 'End angle for the helicalPhaseOffset batch scan, in degrees.';
+                case 'output.helicalOffsetStepDeg'
+                    description = 'Angular step for the helicalPhaseOffset batch scan, in degrees. Must not be 0.';
+                case 'output.helicalOffsetSlmSubfolder'
+                    description = 'Subfolder under the output directory where helical-offset batch SLM images are saved.';
+                case 'output.writeRotatedSlmBatch'
+                    description = 'Batch-exports geometrically rotated copies of the generated SLM bitmap. This is not a physical phase scan.';
+                case 'output.rotatedSlmStartAngleDeg'
+                    description = 'Start angle for rotated SLM bitmap batch export, in degrees.';
+                case 'output.rotatedSlmEndAngleDeg'
+                    description = 'End angle for rotated SLM bitmap batch export, in degrees.';
+                case 'output.rotatedSlmStepDeg'
+                    description = 'Angular step for rotated SLM bitmap batch export, in degrees. Must not be 0.';
+                case 'output.rotatedSlmClockwise'
+                    description = 'Rotation direction for batch export. On means clockwise; off means counterclockwise.';
+                case 'output.rotatedSlmSubfolder'
+                    description = 'Subfolder under the output directory where rotated SLM batch images are saved.';
+                case 'output.plotFigures'
+                    description = 'Also opens MATLAB figure windows. When off, the app still shows previews in the right-hand panels.';
+                case 'output.cropHalfWidthPixels'
+                    description = 'Half-width, in pixels, of the centered crop used when exporting 3D intensity. Larger values export a wider view.';
+                case 'output.referenceSliceIndex'
+                    description = 'Reference z-slice index used for power-density normalization. If it exceeds the stack length, the last slice is used.';
+                case 'output.printProgress'
+                    description = 'Prints BPM progress messages to the MATLAB or VS Code terminal.';
+                case 'output.progressIntervalSeconds'
+                    description = 'Time interval between BPM progress messages, in seconds. Smaller values report more frequently.';
+                case 'output.outputDir'
+                    description = 'Output directory. If empty, the app uses the project outputs folder.';
+                otherwise
+                    description = 'Controls the corresponding simulation, phase, optics, material, or output behavior.';
+            end
+        end
+
+        function value = paramValueToControlValue(app, groupName, fieldName, value)
+            if app.isWavelengthControl(groupName, fieldName)
+                value = app.mmToNm(value);
+            elseif app.isRepetitionRateControl(groupName, fieldName)
+                value = app.hzToKHz(value);
+            elseif app.isPulseWidthControl(groupName, fieldName)
+                value = app.sToFs(value);
+            end
+        end
+
+        function value = controlValueToParamValue(app, groupName, fieldName, value)
+            if app.isWavelengthControl(groupName, fieldName)
+                value = app.nmToMm(value);
+            elseif app.isRepetitionRateControl(groupName, fieldName)
+                value = app.kHzToHz(value);
+            elseif app.isPulseWidthControl(groupName, fieldName)
+                value = app.fsToS(value);
+            end
+        end
+
+        function isMatch = isWavelengthControl(~, groupName, fieldName)
+            isMatch = strcmp(groupName, 'laser') && strcmp(fieldName, 'wavelengthMm');
+        end
+
+        function isMatch = isRepetitionRateControl(~, groupName, fieldName)
+            isMatch = strcmp(groupName, 'laser') && strcmp(fieldName, 'repetitionRateHz');
+        end
+
+        function isMatch = isPulseWidthControl(~, groupName, fieldName)
+            isMatch = strcmp(groupName, 'laser') && strcmp(fieldName, 'pulseWidthS');
+        end
+
+        function valueNm = mmToNm(~, valueMm)
+            valueNm = valueMm * 1e6;
+        end
+
+        function valueMm = nmToMm(~, valueNm)
+            valueMm = valueNm / 1e6;
+        end
+
+        function valueKHz = hzToKHz(~, valueHz)
+            valueKHz = valueHz / 1e3;
+        end
+
+        function valueHz = kHzToHz(~, valueKHz)
+            valueHz = valueKHz * 1e3;
+        end
+
+        function valueFs = sToFs(~, valueS)
+            valueFs = valueS * 1e15;
+        end
+
+        function valueS = fsToS(~, valueFs)
+            valueS = valueFs / 1e15;
+        end
+
+        function groups = groupNames(~)
             groups = {'simulation', 'laser', 'beam', 'phase', 'optics', 'material', 'output'};
         end
 

@@ -103,18 +103,6 @@ run('C:/Users/Shan/Desktop/academic/drill-beam-matlab/src/BPM_drill_AI.m');
 - 适合场景：
   调试输入相位、检查导出逻辑、快速验证脚本是否能跑通。
 
-#### `useGPU`
-
-- 含义：是否尝试用 GPU 计算传播。
-- `true`：
-  会把主要数组放到 GPU 上。
-- `false`：
-  用 CPU 计算。
-- 直接影响：
-  速度和显存占用。
-- 常见风险：
-  GPU 显存不够时可能报错；不同机器上速度收益差异很大。
-
 ### 2. `params.laser`
 
 #### `wavelengthMm`
@@ -184,16 +172,6 @@ run('C:/Users/Shan/Desktop/academic/drill-beam-matlab/src/BPM_drill_AI.m');
   强度整体降低。
 - 注意：
   这主要影响场强比例，不改变相位形状。
-
-#### `beamRadiusCm`
-
-- 含义：旧版估算输入功率密度时使用的光束半径。
-- 调大后：
-  旧式估算的输入光强会变小。
-- 调小后：
-  旧式估算的输入光强会变大。
-- 注意：
-  这个量目前主要是为了保留旧思路，没有深度参与主传播逻辑。
 
 ### 4. `params.phase`
 
@@ -327,22 +305,10 @@ run('C:/Users/Shan/Desktop/academic/drill-beam-matlab/src/BPM_drill_AI.m');
 #### `lens1FocalLengthMm`
 
 - 含义：第一片透镜焦距。
-- 调大后：
-  透镜二次相位变缓。
-- 调小后：
-  透镜二次相位更强。
-- 直接影响：
-  透镜相位、两透镜系统倍率、派生角度。
 
 #### `lens2FocalLengthMm`
 
 - 含义：第二片透镜焦距。
-- 调大后：
-  系统倍率变大。
-- 调小后：
-  系统倍率变小。
-- 直接影响：
-  `magnification`、`beta1` 和后续派生量。
 
 #### `lens1PositionMm`
 

@@ -22,7 +22,11 @@ if exist('BPM_drill_AI_overrides', 'var') % 如果工作区里存在同名覆盖
     params = localApplyWorkspaceOverrides(params, BPM_drill_AI_overrides); % 就用外部参数覆盖默认参数
 end
 params.output.outputDir = localEnsureOutputDirectory(); % 确保输出目录存在，并把路径写回参数结构体
-params.output.progressLogFile = localEnsureProgressLogFile(params.output); % 准备进度日志文件路径，方便 VS Code 里确认程序还在运行
+if params.output.writeProgressLog
+    params.output.progressLogFile = localEnsureProgressLogFile(params.output); % 准备进度日志文件路径，方便 VS Code 里确认程序还在运行
+else
+    params.output.progressLogFile = '';
+end
 
 results = localRunSimulation(params); % 按照参数执行完整仿真，并把所有结果收进 results 结构体
 
@@ -50,46 +54,45 @@ function params = localBuildDefaultParams()
 params = struct(); % 新建最外层参数结构体
 
 params.simulation = struct( ... % 与数值仿真网格和传播步进有关的参数
-    'N', 1081, ... % 横向采样点数，即 x-y 平面是 N x N 的网格
-    'sizeMm', 8.64, ... % 横向计算窗口的物理尺寸，单位 mm
-    'zRangeMm', 500, ... % 沿 z 方向总共传播多远，单位 mm
-    'dzMm', 2, ... % 沿 z 方向每一步传播多远，单位 mm
-    'useBPM', true, ... % 是否启用 BPM 传播；若为 false，则只返回输入场
-    'useGPU', false); % 是否使用 GPU 进行传播计算
+    'N', 1000, ... % 横向采样点数，即 x-y 平面是 N x N 的网格
+    'sizeMm', 8, ... % 横向计算窗口的物理尺寸，单位 mm
+    'zRangeMm', 800, ... % 沿 z 方向总共传播多远，单位 mm
+    'dzMm', 5, ... % 沿 z 方向每一步传播多远，单位 mm
+    'useBPM', true); % 是否启用 BPM 传播；若为 false，则只返回输入场
 
 params.laser = struct( ... % 与激光源自身有关的参数
     'wavelengthMm', double(1.029e-3), ... % 激光波长，单位 mm；1.029e-3 mm = 1029 nm
-    'powerW', 20, ... % 平均功率，单位 W
+    'powerW', 40, ... % 平均功率，单位 W
     'repetitionRateHz', 100e3, ... % 重复频率，单位 Hz
     'pulseWidthS', 275e-15); % 脉宽，单位 s
 
 params.beam = struct( ... % 与入射光束横向包络有关的参数
     'waistRadiusMm', 3.85 / 2, ... % 高斯光束腰半径，单位 mm
-    'fieldAmplitude', 1, ... % 输入场的幅值系数
-    'beamRadiusCm', 0.03); % 用于旧式功率密度估算的光束半径，单位 cm
+    'fieldAmplitude', 1); % 输入场的幅值系数
 
 params.phase = struct( ... % 与相位构造有关的参数
     'airyStrength', 0, ... % Airy 三次相位的强度系数；0 表示关闭
-    'airyScaleMm', 2, ... % Airy 相位里的尺度参数，单位 mm
-    'axiconIndex', 1.4287, ... % axicon 材料折射率；这里保留原来使用的数值
-    'axiconAngleDeg', 0.4, ... % axicon 底角，单位度
+    'airyScaleMm', 1, ... % Airy 相位里的尺度参数，单位 mm
+    'axiconIndex', 1.4287, ... % axicon 材料折射率
+    'axiconAngleDeg', 1, ... % axicon 底角，单位度
     'curvedMaxShiftMm', 0, ... % 曲线 Bessel 末端期望横向偏移量，单位 mm
     'compensationPhase', 0, ... % 额外补偿相位，目前默认关闭
     'vortexCharge', 0, ... % 涡旋相位的拓扑荷数 l
-    'helicalGamma', 1, ... % helical 相位的调制度
+    'helicalGamma', 0, ... % helical 相位的调制度
     'helicalOrder', 1, ... % helical 相位中的角向频率阶数 m
-    'helicalPhaseOffset', 180, ... % helical 相位的初始相位偏置，单位度；代入公式前会转换为弧度
+    'helicalPhaseOffset', 0, ... % helical 相位的初始相位偏置，单位度；代入公式前会转换为弧度
     'omegaInner', 20, ... % 径向 chirp 在中心处的频率参数
     'omegaOuter', 20); % 径向 chirp 在边缘处的频率参数
 
 params.optics = struct( ... % 与传播过程中可能加入的透镜/样品有关的参数
     'lens1FocalLengthMm', 200, ... % 第一片透镜焦距，单位 mm
-    'lens2FocalLengthMm', 30, ... % 第二片透镜焦距，单位 mm
-    'lens1PositionMm', 550, ... % 第一片透镜放置位置，单位 mm
+    'lens2FocalLengthMm', 40, ... % 第二片透镜焦距，单位 mm
+    'lens1PositionMm', 400, ... % 第一片透镜放置位置，单位 mm
+    'lens2PositionMm', 640, ... % 第二片透镜放置位置，单位 mm
     'sampleOffsetFromLens2Mm', 20, ... % 样品相对第二片透镜再往后的距离，单位 mm
-    'lens1Enabled', false, ... % 是否真的在传播中加入第一片透镜
-    'lens2Enabled', false, ... % 是否真的在传播中加入第二片透镜
-    'sampleEnabled', false); % 是否真的在传播中切换到样品折射率
+    'lens1Enabled', true, ... % 是否真的在传播中加入第一片透镜
+    'lens2Enabled', true, ... % 是否真的在传播中加入第二片透镜
+    'sampleEnabled', true); % 是否真的在传播中切换到样品折射率
 
 params.material = struct( ... % 与介质本身有关的参数
     'backgroundIndex', 1, ... % 背景介质折射率；默认取空气 n=1
@@ -97,8 +100,8 @@ params.material = struct( ... % 与介质本身有关的参数
     'damageThresholdWPerM2', 7.2e17); % 材料损伤阈值，单位 W/m^2；对应实验值 7.2e13 W/cm^2
 
 params.output = struct( ... % 与绘图和导出有关的参数
-    'write3DIntensity', true, ... % 是否导出三维强度切片 tif
-    'writeAllPhase', true, ... % 是否导出总 SLM 相位 bmp
+    'write3DIntensity', false, ... % 是否导出三维强度切片 tif
+    'writeAllPhase', false, ... % 是否导出总 SLM 相位 bmp
     'writeHelicalPhase', false, ... % 是否导出单独的 helical 相位 bmp
     'writeHelicalOffsetSlmBatch', false, ... % 是否批量扫描 helicalPhaseOffset 并导出总 SLM 相位 bmp
     'helicalOffsetStartDeg', 0, ... % helicalPhaseOffset 批量扫描的起始角度，单位度
@@ -109,14 +112,14 @@ params.output = struct( ... % 与绘图和导出有关的参数
     'rotatedSlmStartAngleDeg', 0, ... % 批量旋转导出的起始角度，单位度
     'rotatedSlmEndAngleDeg', 359, ... % 批量旋转导出的结束角度，单位度
     'rotatedSlmStepDeg', 1, ... % 批量旋转导出的角度步长，单位度
-    'rotatedSlmClockwise', true, ... % true 表示顺时针旋转；false 表示逆时针旋转
+    'rotatedSlmClockwise', false, ... % true 表示顺时针旋转；false 表示逆时针旋转
     'rotatedSlmSubfolder', 'SLM_phase_rotated_0_to_359', ... % 批量旋转 SLM 图单独保存到 outputs 下面的这个子文件夹
-    'plotFigures', true, ... % 是否绘制图窗
+    'plotFigures', false, ... % 是否绘制图窗
     'cropHalfWidthPixels', 100, ... % 导出 3D 强度时，围绕中心裁剪的半宽像素数
     'referenceSliceIndex', 30, ... % 用于做功率密度归一化参考的 z 切片编号
-    'printProgress', true, ... % 是否在 MATLAB/VS Code 终端里打印 BPM 进度
+    'printProgress', false, ... % 是否在 MATLAB/VS Code 终端里打印 BPM 进度
     'progressIntervalSeconds', 5, ... % 每隔多少秒打印一次进度
-    'writeProgressLog', true, ... % 是否把 BPM 进度同步写入 outputs 里的 log 文件
+    'writeProgressLog', false, ... % 是否把 BPM 进度同步写入 outputs 里的 log 文件
     'progressLogFile', '', ... % 进度日志文件路径；留空时程序自动放到 outputs/BPM_drill_AI_progress.log
     'outputDir', ''); % 输出目录；稍后由程序自动填入
 end
@@ -193,7 +196,7 @@ inputField = inputEnvelope .* exp(1i * phase.all); % 把总相位乘到高斯包
 angularSpectrum = fftshift(fft2(inputField)); % 对输入场做二维傅里叶变换，得到角谱
 
 propagation = localRunBpmPropagation(inputField, grid, params, derived); % 用 FFT-BPM 做 z 方向传播
-postprocess = localComputePostprocess(propagation.E3D, params, derived); % 对传播结果做功率密度等后处理
+postprocess = localComputePostprocess(propagation.E3D, propagation.zValuesMm, grid, params, derived); % 对传播结果做功率密度等后处理
 
 results = struct(); % 新建结果结构体
 results.params = params; % 保存完整参数，便于后面绘图/导出统一调用
@@ -217,17 +220,19 @@ grid.sizeMm = simulation.sizeMm; % 保存横向物理尺寸
 grid.dxMm = simulation.sizeMm / simulation.N; % x 方向单个像素的物理大小
 grid.dyMm = grid.dxMm; % y 方向与 x 方向保持相同采样间距
 
-[grid.x, grid.y] = meshgrid( ... % 在 x-y 平面上建立二维网格坐标
-    linspace(-simulation.sizeMm / 2, simulation.sizeMm / 2, simulation.N), ... % x 坐标从 -size/2 到 +size/2
-    linspace(-simulation.sizeMm / 2, simulation.sizeMm / 2, simulation.N)); % y 坐标从 -size/2 到 +size/2
+sampleIndices = -floor(simulation.N / 2):(ceil(simulation.N / 2) - 1); % FFT 一致的中心采样索引；奇偶 N 都包含 0
+grid.xValuesMm = sampleIndices * grid.dxMm; % x 坐标轴，间距严格等于 dxMm
+grid.yValuesMm = grid.xValuesMm; % y 坐标轴，当前使用方形采样窗口
+[grid.x, grid.y] = meshgrid(grid.xValuesMm, grid.yValuesMm); % 在 x-y 平面上建立二维网格坐标
 [grid.theta, grid.r] = cart2pol(grid.x, grid.y); % 把笛卡尔坐标转成极坐标，便于构造涡旋/axicon 等相位
 
 grid.fSizeInvMm = simulation.N / simulation.sizeMm; % 频域总尺寸，单位 mm^-1
 grid.dfxInvMm = 1 / simulation.sizeMm; % 频域像素间距，单位 mm^-1
 grid.dfyInvMm = grid.dfxInvMm; % y 方向频域采样间距与 x 一样
-[grid.fx, grid.fy] = meshgrid( ... % 建立频域平面的二维网格
-    linspace(-grid.fSizeInvMm / 2, grid.fSizeInvMm / 2, simulation.N), ... % fx 坐标
-    linspace(-grid.fSizeInvMm / 2, grid.fSizeInvMm / 2, simulation.N)); % fy 坐标
+frequencyValuesInvMm = sampleIndices * grid.dfxInvMm; % 与 fftshift(fft2(...)) 排列一致的频率坐标
+grid.fxValuesInvMm = frequencyValuesInvMm; % 保存一维 fx 坐标
+grid.fyValuesInvMm = frequencyValuesInvMm; % 保存一维 fy 坐标
+[grid.fx, grid.fy] = meshgrid(grid.fxValuesInvMm, grid.fyValuesInvMm); % 建立频域平面的二维网格
 grid.kx = 2 * pi * grid.fx; % 把空间频率转换成横向波矢分量 kx
 grid.ky = 2 * pi * grid.fy; % 把空间频率转换成横向波矢分量 ky
 grid.zValuesMm = 0:simulation.dzMm:simulation.zRangeMm; % 生成所有 z 方向传播位置
@@ -244,8 +249,6 @@ derived.kBackground = 2 * pi * params.material.backgroundIndex / params.laser.wa
 derived.kSample = 2 * pi * params.material.sampleIndex / params.laser.wavelengthMm; % 样品中的总波数 k_m
 derived.pulseEnergyJ = params.laser.powerW / params.laser.repetitionRateHz; % 单脉冲能量 = 平均功率 / 重复频率
 derived.pulsePeakPowerW = derived.pulseEnergyJ / params.laser.pulseWidthS; % 峰值功率 = 单脉冲能量 / 脉宽
-derived.beamAreaLegacy = pi * params.beam.beamRadiusCm ^ 2; % 沿用旧代码的光束面积表达式，单位保持原先写法
-derived.inputBeamIntensityLegacy = derived.pulsePeakPowerW / derived.beamAreaLegacy; % 沿用旧思路估算的输入光强
 
 derived.optics = struct(); % 新建一个 optics 子结构体，用来存和透镜系统有关的派生量
 derived.optics.alphaRad = deg2rad(params.phase.axiconAngleDeg); % 把 axicon 角度从度转换成弧度
@@ -260,7 +263,7 @@ derived.optics.zFocusMm = params.beam.waistRadiusMm / (2 * tan(derived.optics.be
 derived.optics.deltaZMm = 0.8 * 2 * derived.optics.zFocusMm; % 原脚本中的 delta_z
 derived.optics.deltaZMaterialMm = derived.optics.magnification ^ 2 * derived.optics.deltaZMm; % 原脚本中的 delta_zm
 derived.optics.lens1PositionMm = params.optics.lens1PositionMm; % 第一片透镜位置
-derived.optics.lens2PositionMm = params.optics.lens1PositionMm + params.optics.lens1FocalLengthMm + params.optics.lens2FocalLengthMm; % 第二片透镜位置
+derived.optics.lens2PositionMm = params.optics.lens2PositionMm; % 第二片透镜位置
 derived.optics.samplePositionMm = derived.optics.lens2PositionMm + params.optics.sampleOffsetFromLens2Mm; % 样品位置
 end
 
@@ -273,7 +276,7 @@ function phase = localBuildPhaseMaps(grid, params, derived)
 phase = struct(); % 新建相位结构体
 
 phase.airy = params.phase.airyStrength * ((grid.x ./ params.phase.airyScaleMm) .^ 3 + (grid.y ./ params.phase.airyScaleMm) .^ 3); % Airy 三次相位
-phase.axicon = derived.kBackground * tand(params.phase.axiconAngleDeg) * (-grid.r); % axicon 径向线性相位
+phase.axicon = derived.kBackground * (params.phase.axiconIndex - params.material.backgroundIndex) * tand(params.phase.axiconAngleDeg) * (grid.sizeMm / 2 - grid.r); % axicon 径向线性相位
 
 phase.maxPropagationMm = (grid.sizeMm / 2) / tand(params.phase.axiconAngleDeg); % 几何近似下的最大无衍射传播距离
 phase.curvatureA = params.phase.curvedMaxShiftMm / (phase.maxPropagationMm ^ 2); % 抛物线轨迹 x = A z^2 中的曲率系数 A
@@ -315,19 +318,14 @@ if ~params.simulation.useBPM % 如果用户关闭了 BPM
 end
 
 zValuesMm = grid.zValuesMm; % 取出所有 z 方向传播位置
-if params.simulation.useGPU % 如果用户要求用 GPU
-    currentField = gpuArray(inputField); % 把输入场放到 GPU 上
-    kx = gpuArray(grid.kx); % 把 kx 网格也搬到 GPU 上
-    ky = gpuArray(grid.ky); % 把 ky 网格也搬到 GPU 上
-    radius = gpuArray(grid.r); % 半径网格也搬到 GPU 上
-else % 如果不用 GPU
-    currentField = inputField; % 直接在 CPU 上计算
-    kx = grid.kx; % 使用 CPU 版 kx
-    ky = grid.ky; % 使用 CPU 版 ky
-    radius = grid.r; % 使用 CPU 版 r
-end
+currentField = inputField; % 直接在 CPU 上计算
+kx = grid.kx; % 使用 CPU 版 kx
+ky = grid.ky; % 使用 CPU 版 ky
+radius = grid.r; % 使用 CPU 版 r
 
-propagationKernel = exp(1i * params.simulation.dzMm * sqrt(derived.kBackground ^ 2 - kx .^ 2 - ky .^ 2)); % 背景介质中的单步传播算子
+backgroundPropagationKernel = exp(1i * params.simulation.dzMm * sqrt(derived.kBackground ^ 2 - kx .^ 2 - ky .^ 2)); % 背景介质中的单步传播算子
+samplePropagationKernel = exp(1i * params.simulation.dzMm * sqrt(derived.kSample ^ 2 - kx .^ 2 - ky .^ 2)); % 样品介质中的单步传播算子
+propagationKernel = backgroundPropagationKernel; % 当前传播区间使用的传播算子；到达样品后切换
 lens1Phase = exp(-1i * derived.kBackground / (2 * params.optics.lens1FocalLengthMm) * radius .^ 2); % 第一片透镜的二次相位
 lens2Phase = exp(-1i * derived.kBackground / (2 * params.optics.lens2FocalLengthMm) * radius .^ 2); % 第二片透镜的二次相位
 
@@ -339,8 +337,27 @@ progressTimer = tic; % 为 BPM 主循环单独计时
 localProgressStart(params, numel(zValuesMm)); % 打印/记录 BPM 开始运行的信息
 lastProgressTimeSeconds = -inf; % 记录上一次输出进度的时间；初值设为 -inf 保证第一步会输出
 
-for index = 1:numel(zValuesMm) % 逐个 z 切片推进
+initialZValueMm = zValuesMm(1); % 第一个切片是真正的输入平面 z=0
+if params.optics.lens1Enabled && isnan(lens1AppliedAtMm) && initialZValueMm >= derived.optics.lens1PositionMm
+    currentField = currentField .* lens1Phase;
+    lens1AppliedAtMm = initialZValueMm;
+end
+if params.optics.lens2Enabled && isnan(lens2AppliedAtMm) && initialZValueMm >= derived.optics.lens2PositionMm
+    currentField = currentField .* lens2Phase;
+    lens2AppliedAtMm = initialZValueMm;
+end
+if params.optics.sampleEnabled && isnan(sampleAppliedAtMm) && initialZValueMm >= derived.optics.samplePositionMm
+    propagationKernel = samplePropagationKernel;
+    sampleAppliedAtMm = initialZValueMm;
+end
+fieldStack(:, :, 1) = currentField; % 保存 z=0 输入场，避免整条 z 轴被错标一个 dz
+[lastProgressTimeSeconds, ~] = localProgressUpdate(params, 1, numel(zValuesMm), initialZValueMm, progressTimer, lastProgressTimeSeconds);
+
+for index = 2:numel(zValuesMm) % 逐个 z 切片推进
     zValueMm = zValuesMm(index); % 当前这一步对应的 z 位置
+
+    stepSpectrum = fftshift(fft2(currentField)); % 先把当前场变换到频域
+    currentField = ifft2(ifftshift(stepSpectrum .* propagationKernel)); % 乘单步传播算子后再变回空间域
 
     if params.optics.lens1Enabled && isnan(lens1AppliedAtMm) && zValueMm >= derived.optics.lens1PositionMm % 如果第一片透镜已启用且还没加入且当前 z 到达其位置
         currentField = currentField .* lens1Phase; % 把第一片透镜相位乘到当前场上
@@ -353,27 +370,25 @@ for index = 1:numel(zValuesMm) % 逐个 z 切片推进
     end
 
     if params.optics.sampleEnabled && isnan(sampleAppliedAtMm) && zValueMm >= derived.optics.samplePositionMm % 如果样品已启用且还没切换且当前 z 到达样品位置
-        propagationKernel = exp(1i * params.simulation.dzMm * sqrt(derived.kSample ^ 2 - kx .^ 2 - ky .^ 2)); % 把传播算子切换成样品介质中的版本
+        propagationKernel = samplePropagationKernel; % 把传播算子切换成样品介质中的版本，从下一段传播开始生效
         sampleAppliedAtMm = zValueMm; % 记录样品开始生效的位置
     end
 
-    stepSpectrum = fftshift(fft2(currentField)); % 先把当前场变换到频域
-    currentField = ifft2(ifftshift(stepSpectrum .* propagationKernel)); % 乘单步传播算子后再变回空间域
     fieldStack(:, :, index) = currentField; % 把这一步传播后的场存入三维数组
     [lastProgressTimeSeconds, ~] = localProgressUpdate(params, index, numel(zValuesMm), zValueMm, progressTimer, lastProgressTimeSeconds); % 按时间间隔打印/记录当前进度
 end
 
 localProgressFinish(params, numel(zValuesMm), toc(progressTimer)); % 打印/记录 BPM 结束信息
 
-propagation.E3D = gather(fieldStack); % 如果前面用过 GPU，这里把三维结果取回 CPU 内存
-propagation.finalField = gather(currentField); % 同时保存最终 z 面上的场
+propagation.E3D = fieldStack; % 保存三维传播场
+propagation.finalField = currentField; % 同时保存最终 z 面上的场
 propagation.zValuesMm = zValuesMm; % 保存 z 位置序列
 propagation.lens1AppliedAtMm = lens1AppliedAtMm; % 保存第一片透镜的实际插入位置
 propagation.lens2AppliedAtMm = lens2AppliedAtMm; % 保存第二片透镜的实际插入位置
 propagation.sampleAppliedAtMm = sampleAppliedAtMm; % 保存样品开始生效的位置
 end
 
-function postprocess = localComputePostprocess(fieldStack, params, derived)
+function postprocess = localComputePostprocess(fieldStack, zValuesMm, grid, params, derived)
 % localComputePostprocess
 % 作用：从三维复场中提取强度、功率密度、轴上曲线、对数图等后处理结果。
 % 注意：这里的功率密度标定仍然沿用了旧代码的“参考切片归一化”思路，
@@ -384,18 +399,34 @@ postprocess = struct(); % 新建后处理结果结构体
 referenceSliceIndex = min(params.output.referenceSliceIndex, size(fieldStack, 3)); % 防止参考切片编号超过 z 切片总数
 referenceSlice = abs(fieldStack(:, :, referenceSliceIndex)) .^ 2; % 取参考 z 切片的强度分布
 sumIntensity = sum(referenceSlice, 'all'); % 求参考切片上的总强度
-pixelAreaMm2 = (params.simulation.sizeMm / params.simulation.N) ^ 2; % 每个像素对应的物理面积，单位 mm^2
+if sumIntensity <= 0 || ~isfinite(sumIntensity)
+    error('Reference slice has zero or invalid total intensity.');
+end
+pixelAreaMm2 = grid.dxMm * grid.dyMm; % 每个像素对应的物理面积，单位 mm^2
 pixelPowerW = 1 / sumIntensity; % 假设参考切片总强度归一到 1 W 时，单个强度单位对应多少功率
 pixelPowerDensityWPerMm2 = pixelPowerW / pixelAreaMm2; % 把单像素功率换成功率密度，单位 W/mm^2
 thresholdWPerMm2 = params.material.damageThresholdWPerM2 / 1e6; % 把材料阈值从 W/m^2 转成 W/mm^2；当前默认值对应 7.2e11 W/mm^2
 
-midSlice = floor(size(fieldStack, 1) / 2); % 取横向中心位置，用于看中心剖面
-yImageMm = linspace(-params.simulation.sizeMm / 2, params.simulation.sizeMm / 2, params.simulation.N); % y 方向显示坐标
-zImageMm = linspace(0, params.simulation.zRangeMm, size(fieldStack, 3)); % z 方向显示坐标
-crossSectionIntensity = reshape(abs(fieldStack(midSlice, :, :)) .^ 2, params.simulation.N, []); % 提取中心 x 截面，并明确整理成 y 行、z 列
+centerRowIndex = find(grid.yValuesMm == 0, 1); % FFT 一致的中心采样轴保证奇偶 N 都有 y=0
+centerColumnIndex = find(grid.xValuesMm == 0, 1); % FFT 一致的中心采样轴保证奇偶 N 都有 x=0
+if isempty(centerRowIndex) || isempty(centerColumnIndex)
+    error('Centered grid does not contain x=0 and y=0 samples.');
+end
+yImageMm = grid.yValuesMm; % y 方向显示坐标，与传播网格保持一致
+zImageMm = reshape(zValuesMm, 1, []); % z 方向显示坐标直接使用传播过程中的真实采样位置
+crossSectionIntensity = reshape(abs(fieldStack(:, centerColumnIndex, :)) .^ 2, params.simulation.N, []); % 固定 x=0，提取 y-z 中心截面
 crossSectionPowerDensity = crossSectionIntensity .* pixelPowerDensityWPerMm2; % 把二维强度图换成功率密度图
 crossSectionPeakPowerDensity = crossSectionPowerDensity * derived.pulsePeakPowerW; % 再乘峰值功率，得到峰值功率密度估算
-onAxisPeakPowerDensity = crossSectionPeakPowerDensity(midSlice, :); % 再取中心 y 位置，得到轴上峰值功率密度曲线
+onAxisPeakPowerDensity = crossSectionPeakPowerDensity(centerRowIndex, :); % 再取中心 y 位置，得到轴上峰值功率密度曲线
+
+slicePeakIntensity = zeros(1, size(fieldStack, 3)); % 每个 z 平面内真正的峰值强度，用于和 on-axis 曲线区分
+for sliceIndex = 1:size(fieldStack, 3)
+    currentIntensity = abs(fieldStack(:, :, sliceIndex)) .^ 2;
+    slicePeakIntensity(sliceIndex) = max(currentIntensity(:));
+end
+slicePeakPowerDensity = slicePeakIntensity .* pixelPowerDensityWPerMm2 * derived.pulsePeakPowerW;
+[onAxisMaxPeakPowerDensity, onAxisMaxIndex] = max(onAxisPeakPowerDensity);
+[sliceMaxPeakPowerDensity, sliceMaxIndex] = max(slicePeakPowerDensity);
 
 postprocess.referenceSliceIndex = referenceSliceIndex; % 保存参考切片编号
 postprocess.pixelPowerW = pixelPowerW; % 保存单强度单位对应的功率
@@ -406,7 +437,11 @@ postprocess.thresholdWPerMm2 = thresholdWPerMm2; % 保存换算后的材料阈�
 postprocess.unitAssumptions = [ ... % 保存一段文字说明，提醒这套单位处理的假设是什么
     'Reference slice total intensity is normalized to 1 W CW, then scaled by pulse peak power. ', ... % 第一句说明参考切片归一化方式
     'Peak power-density plots are reported in W/mm^2. Material threshold is provided in W/m^2 and converted for plotting.']; % 第二句说明画图时单位怎么处理
-postprocess.midSliceIndex = midSlice; % 保存中心剖面索引
+postprocess.midSliceIndex = centerRowIndex; % 兼容旧字段名：保存中心 y 索引
+postprocess.centerRowIndex = centerRowIndex; % 保存中心 y 索引
+postprocess.centerColumnIndex = centerColumnIndex; % 保存中心 x 索引
+postprocess.centerXMm = grid.xValuesMm(centerColumnIndex); % 保存中心 x 坐标，便于确认 on-axis 采样点
+postprocess.centerYMm = grid.yValuesMm(centerRowIndex); % 保存中心 y 坐标，便于确认 on-axis 采样点
 postprocess.yImageMm = yImageMm; % 保存 y 方向绘图坐标
 postprocess.zImageMm = zImageMm; % 保存 z 方向绘图坐标
 postprocess.crossSectionIntensity = crossSectionIntensity; % 保存中心截面强度图
@@ -415,6 +450,11 @@ postprocess.crossSectionPeakPowerDensityWPerMm2 = crossSectionPeakPowerDensity; 
 postprocess.crossSectionIntensityLog = log(1 + crossSectionIntensity); % 保存强度的对数显示版本
 postprocess.crossSectionPeakPowerDensityLog = log(1 + crossSectionPeakPowerDensity); % 保存峰值功率密度的对数显示版本
 postprocess.onAxisPeakPowerDensityWPerMm2 = onAxisPeakPowerDensity; % 保存轴上峰值功率密度曲线
+postprocess.slicePeakPowerDensityWPerMm2 = slicePeakPowerDensity; % 保存每个 z 平面内的真实峰值功率密度
+postprocess.onAxisMaxPeakPowerDensityWPerMm2 = onAxisMaxPeakPowerDensity; % 保存轴上最大值
+postprocess.onAxisMaxZMm = zImageMm(onAxisMaxIndex); % 保存轴上最大值位置
+postprocess.sliceMaxPeakPowerDensityWPerMm2 = sliceMaxPeakPowerDensity; % 保存全平面峰值的最大值
+postprocess.sliceMaxZMm = zImageMm(sliceMaxIndex); % 保存全平面峰值最大值位置
 end
 
 function localPlotResults(results, params)
@@ -424,6 +464,7 @@ function localPlotResults(results, params)
 % figure(2) 主要看传播剖面和轴上峰值功率密度。
 
 figure(1); % 新建第一张图窗
+clf('reset'); % 清掉上一轮图里的隐藏辅助线和色条
 tiledlayout(2, 3, 'Padding', 'none', 'TileSpacing', 'compact'); % 用 2x3 的紧凑布局排版
 
 nexttile; % 切到第 1 个子图
@@ -457,11 +498,12 @@ title('phase vortex'); % 图标题
 colorbar; % 显示颜色条
 
 figure(2); % 新建第二张图窗
+clf('reset'); % 清掉上一轮图里的隐藏辅助线和色条
 tiledlayout(3, 1, 'Padding', 'none', 'TileSpacing', 'compact'); % 用 3x1 的布局依次排三个剖面图
 
 nexttile; % 切到第 1 个子图
 imagesc(results.postprocess.zImageMm, results.postprocess.yImageMm, results.postprocess.crossSectionPeakPowerDensityLog); % 显示峰值功率密度的对数剖面图
-title('Estimated peak power density log scale (W/mm^2)'); % 图标题
+title('Estimated center y-z peak power density log scale (W/mm^2)'); % 图标题
 colorbar; % 显示颜色条
 localPlotActiveMarkers(gca, results, params); % 如果启用了透镜/样品，就在图上画位置线
 axis on; % 保留坐标轴
@@ -470,7 +512,7 @@ ylabel('y (mm)'); % y 轴标签
 
 nexttile; % 切到第 2 个子图
 imagesc(results.postprocess.zImageMm, results.postprocess.yImageMm, results.postprocess.crossSectionPeakPowerDensityWPerMm2); % 显示线性尺度的峰值功率密度剖面图
-title('Estimated peak power density (W/mm^2)'); % 图标题
+title('Estimated center y-z peak power density (W/mm^2)'); % 图标题
 colorbar; % 显示颜色条
 localPlotActiveMarkers(gca, results, params); % 如果启用了透镜/样品，就在图上画位置线
 axis on; % 保留坐标轴
@@ -478,16 +520,47 @@ xlabel('z (mm)'); % x 轴标签
 ylabel('y (mm)'); % y 轴标签
 
 nexttile; % 切到第 3 个子图
-peakPowerDensity = max(results.postprocess.onAxisPeakPowerDensityWPerMm2); % 找到轴上峰值功率密度曲线的最大值，方便设坐标范围
-plot(results.postprocess.zImageMm, results.postprocess.onAxisPeakPowerDensityWPerMm2); % 画轴上峰值功率密度曲线，横坐标使用真实 z 位置
+peakPowerDensity = max([results.postprocess.onAxisPeakPowerDensityWPerMm2(:); results.postprocess.slicePeakPowerDensityWPerMm2(:)]); % 找到显示曲线的最大值，方便设坐标范围
+plot(results.postprocess.zImageMm, results.postprocess.onAxisPeakPowerDensityWPerMm2, 'DisplayName', 'On-axis'); % 画轴上峰值功率密度曲线，横坐标使用真实 z 位置
 hold on; % 允许在同一张图上继续叠加元素
-yline(results.postprocess.thresholdWPerMm2, 'Color', 'r'); % 用红线画出材料损伤阈值参考线
+plot(results.postprocess.zImageMm, results.postprocess.slicePeakPowerDensityWPerMm2, '--', 'DisplayName', 'Slice peak'); % 画每个 z 平面的真实峰值曲线
+yline(results.postprocess.thresholdWPerMm2, 'Color', 'r', 'DisplayName', 'Threshold'); % 用红线画出材料损伤阈值参考线
 xlim([min(results.postprocess.zImageMm), max(results.postprocess.zImageMm)]); % 横坐标显示真实 z 范围
 ylim([0, peakPowerDensity * 1.5]); % 纵坐标从 0 到峰值的 1.5 倍
+localPlotActiveMarkers(gca, results, params); % 在曲线图上也标出透镜/样品位置
+localAddBlankColorbarSlot(gca); % 给曲线图预留与上面 colorbar 相同的右侧宽度，保证 z 方向对齐
 xlabel('z (mm)'); % 补上横坐标标签
 ylabel('Power density (W/mm^2)'); % 补上纵坐标标签
-title('Estimated on-axis peak power density (W/mm^2)'); % 图标题
+title('Estimated on-axis and slice-peak power density (W/mm^2)'); % 图标题
+legend('Location', 'northeast'); % 区分轴上采样和真实切片峰值
 hold off; % 关闭叠加模式
+end
+
+function localAddBlankColorbarSlot(axHandle)
+% localAddBlankColorbarSlot
+% 作用：为没有色条的曲线图保留和上方剖面图一致的右侧空间，让三张图的 z 位置对齐。
+
+slotColor = axHandle.Color;
+figureHandle = ancestor(axHandle, 'figure');
+if ~isempty(figureHandle) && isnumeric(figureHandle.Color) && numel(figureHandle.Color) == 3
+    slotColor = figureHandle.Color;
+end
+if ~isnumeric(slotColor) || numel(slotColor) ~= 3
+    slotColor = [1 1 1];
+end
+
+try
+    colormap(axHandle, repmat(slotColor, 256, 1));
+catch
+end
+
+colorbarHandle = colorbar(axHandle);
+colorbarHandle.Limits = [0 1];
+colorbarHandle.Ticks = linspace(0, 1, 6);
+colorbarHandle.TickLabels = {'0', '2', '4', '6', '8', '10'};
+colorbarHandle.Color = slotColor;
+colorbarHandle.Box = 'off';
+colorbarHandle.Label.String = '';
 end
 
 function localPlotActiveMarkers(axHandle, results, params)
@@ -496,15 +569,53 @@ function localPlotActiveMarkers(axHandle, results, params)
 % 就在剖面图上把这些元件对应的 z 位置画成竖线。
 
 if params.optics.lens1Enabled % 如果第一片透镜启用
-    xline(axHandle, results.derived.optics.lens1PositionMm, 'Color', 'r'); % 画出第一片透镜位置
+    localPlotNamedMarker(axHandle, results.derived.optics.lens1PositionMm, 'lens1', 'r', 1); % 画出第一片透镜位置
 end
 
 if params.optics.lens2Enabled % 如果第二片透镜启用
-    xline(axHandle, results.derived.optics.lens2PositionMm, 'Color', 'r'); % 画出第二片透镜位置
+    localPlotNamedMarker(axHandle, results.derived.optics.lens2PositionMm, 'lens2', 'r', 1); % 画出第二片透镜位置
 end
 
 if params.optics.sampleEnabled % 如果样品启用
-    xline(axHandle, results.derived.optics.samplePositionMm, 'Color', 'w'); % 画出样品位置
+    localPlotNamedMarker(axHandle, results.derived.optics.samplePositionMm, 'sample', 'w', 2); % 画出样品位置
+end
+end
+
+function localPlotNamedMarker(axHandle, zPositionMm, labelText, markerColor, labelSlot)
+% localPlotNamedMarker
+% 作用：画出一个光学元件位置线，并在图内标注它的名字。
+
+xline(axHandle, zPositionMm, 'Color', markerColor, 'HandleVisibility', 'off');
+text(axHandle, zPositionMm, localMarkerLabelY(axHandle, labelSlot), labelText, ...
+    'Color', [1 1 1], ...
+    'BackgroundColor', [0 0 0], ...
+    'FontWeight', 'bold', ...
+    'HorizontalAlignment', 'center', ...
+    'VerticalAlignment', 'middle', ...
+    'Rotation', 90, ...
+    'Margin', 1, ...
+    'Clipping', 'on', ...
+    'HitTest', 'off', ...
+    'Interpreter', 'none');
+end
+
+function yPosition = localMarkerLabelY(axHandle, labelSlot)
+% localMarkerLabelY
+% 作用：把标签放在当前坐标轴顶部附近，同时兼容 imagesc 的反向 y 轴。
+
+yLimits = ylim(axHandle);
+ySpan = diff(yLimits);
+if ~isfinite(ySpan) || ySpan == 0
+    ySpan = 1;
+end
+
+labelFractions = [0.18, 0.34, 0.50];
+labelSlot = max(1, min(labelSlot, numel(labelFractions)));
+labelOffset = labelFractions(labelSlot) * ySpan;
+if strcmpi(axHandle.YDir, 'reverse')
+    yPosition = yLimits(1) + labelOffset;
+else
+    yPosition = yLimits(2) - labelOffset;
 end
 end
 
@@ -512,8 +623,8 @@ function localProgressStart(params, totalSteps)
 % localProgressStart
 % 作用：在 BPM 主循环开始时输出一条清晰的起始信息。
 
-message = sprintf('BPM START: total_steps=%d, log_file=%s', totalSteps, params.output.progressLogFile); % 组合开始信息；使用 ASCII 避免 VS Code 终端乱码
-localProgressWrite(params, message, true); % 打印到终端，并用这条信息重置日志文件
+message = sprintf('BPM START: total_steps=%d', totalSteps); % 组合开始信息；使用 ASCII 避免 VS Code 终端乱码
+localProgressWrite(params, message, true); % 打印/显示开始信息
 end
 
 function [lastProgressTimeSeconds, didPrint] = localProgressUpdate(params, index, totalSteps, zValueMm, progressTimer, lastProgressTimeSeconds)
