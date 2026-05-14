@@ -516,47 +516,30 @@ classdef BPM_drill_AI_app < matlab.apps.AppBase
         function plotActiveMarkers(app, ax, results)
             hold(ax, 'on');
             if results.params.optics.lens1Enabled
-                app.plotNamedMarker(ax, results.derived.optics.lens1PositionMm, 'lens1', 'r', 1);
+                app.plotOpticMarker(ax, results.derived.optics.lens1PositionMm, 'Lens 1', 'r');
             end
             if results.params.optics.lens2Enabled
-                app.plotNamedMarker(ax, results.derived.optics.lens2PositionMm, 'lens2', 'r', 1);
+                app.plotOpticMarker(ax, results.derived.optics.lens2PositionMm, 'Lens 2', 'r');
             end
             if results.params.optics.sampleEnabled
-                app.plotNamedMarker(ax, results.derived.optics.samplePositionMm, 'sample', 'w', 2);
+                app.plotOpticMarker(ax, results.derived.optics.samplePositionMm, 'Sample', 'w');
             end
             hold(ax, 'off');
         end
 
-        function plotNamedMarker(app, ax, zPositionMm, labelText, markerColor, labelSlot)
-            xline(ax, zPositionMm, 'Color', markerColor, 'HandleVisibility', 'off');
-            yPosition = app.markerLabelY(ax, labelSlot);
-            text(ax, zPositionMm, yPosition, labelText, ...
-                'Color', [1 1 1], ...
-                'BackgroundColor', [0 0 0], ...
-                'FontWeight', 'bold', ...
-                'HorizontalAlignment', 'center', ...
-                'VerticalAlignment', 'middle', ...
-                'Rotation', 90, ...
-                'Margin', 1, ...
-                'Clipping', 'on', ...
-                'HitTest', 'off', ...
-                'Interpreter', 'none');
-        end
+        function plotOpticMarker(~, ax, zPositionMm, labelText, lineColor)
+            marker = xline(ax, zPositionMm, ...
+                'Color', lineColor, ...
+                'LineWidth', 1, ...
+                'Label', labelText, ...
+                'LabelOrientation', 'aligned', ...
+                'LabelVerticalAlignment', 'top', ...
+                'LabelHorizontalAlignment', 'center', ...
+                'HandleVisibility', 'off');
 
-        function yPosition = markerLabelY(~, ax, labelSlot)
-            yLimits = ylim(ax);
-            ySpan = diff(yLimits);
-            if ~isfinite(ySpan) || ySpan == 0
-                ySpan = 1;
-            end
-
-            labelFractions = [0.18, 0.34, 0.50];
-            labelSlot = max(1, min(labelSlot, numel(labelFractions)));
-            labelOffset = labelFractions(labelSlot) * ySpan;
-            if strcmpi(ax.YDir, 'reverse')
-                yPosition = yLimits(1) + labelOffset;
-            else
-                yPosition = yLimits(2) - labelOffset;
+            try
+                marker.FontWeight = 'bold';
+            catch
             end
         end
 

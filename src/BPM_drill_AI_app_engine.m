@@ -598,53 +598,31 @@ function localPlotActiveMarkers(axHandle, results, params)
 % 就在剖面图上把这些元件对应的 z 位置画成竖线。
 
 if params.optics.lens1Enabled % 如果第一片透镜启用
-    localPlotNamedMarker(axHandle, results.derived.optics.lens1PositionMm, 'lens1', 'r', 1); % 画出第一片透镜位置
+    localPlotOpticMarker(axHandle, results.derived.optics.lens1PositionMm, 'Lens 1', 'r'); % 画出第一片透镜位置
 end
 
 if params.optics.lens2Enabled % 如果第二片透镜启用
-    localPlotNamedMarker(axHandle, results.derived.optics.lens2PositionMm, 'lens2', 'r', 1); % 画出第二片透镜位置
+    localPlotOpticMarker(axHandle, results.derived.optics.lens2PositionMm, 'Lens 2', 'r'); % 画出第二片透镜位置
 end
 
 if params.optics.sampleEnabled % 如果样品启用
-    localPlotNamedMarker(axHandle, results.derived.optics.samplePositionMm, 'sample', 'w', 2); % 画出样品位置
+    localPlotOpticMarker(axHandle, results.derived.optics.samplePositionMm, 'Sample', 'w'); % 画出样品位置
 end
 end
 
-function localPlotNamedMarker(axHandle, zPositionMm, labelText, markerColor, labelSlot)
-% localPlotNamedMarker
-% 作用：画出一个光学元件位置线，并在图内标注它的名字。
+function localPlotOpticMarker(axHandle, zPositionMm, labelText, lineColor)
+marker = xline(axHandle, zPositionMm, ...
+    'Color', lineColor, ...
+    'LineWidth', 1, ...
+    'Label', labelText, ...
+    'LabelOrientation', 'aligned', ...
+    'LabelVerticalAlignment', 'top', ...
+    'LabelHorizontalAlignment', 'center', ...
+    'HandleVisibility', 'off');
 
-xline(axHandle, zPositionMm, 'Color', markerColor, 'HandleVisibility', 'off');
-text(axHandle, zPositionMm, localMarkerLabelY(axHandle, labelSlot), labelText, ...
-    'Color', [1 1 1], ...
-    'BackgroundColor', [0 0 0], ...
-    'FontWeight', 'bold', ...
-    'HorizontalAlignment', 'center', ...
-    'VerticalAlignment', 'middle', ...
-    'Rotation', 90, ...
-    'Margin', 1, ...
-    'Clipping', 'on', ...
-    'HitTest', 'off', ...
-    'Interpreter', 'none');
-end
-
-function yPosition = localMarkerLabelY(axHandle, labelSlot)
-% localMarkerLabelY
-% 作用：把标签放在当前坐标轴顶部附近，同时兼容 imagesc 的反向 y 轴。
-
-yLimits = ylim(axHandle);
-ySpan = diff(yLimits);
-if ~isfinite(ySpan) || ySpan == 0
-    ySpan = 1;
-end
-
-labelFractions = [0.18, 0.34, 0.50];
-labelSlot = max(1, min(labelSlot, numel(labelFractions)));
-labelOffset = labelFractions(labelSlot) * ySpan;
-if strcmpi(axHandle.YDir, 'reverse')
-    yPosition = yLimits(1) + labelOffset;
-else
-    yPosition = yLimits(2) - labelOffset;
+try
+    marker.FontWeight = 'bold';
+catch
 end
 end
 
