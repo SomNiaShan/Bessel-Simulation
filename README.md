@@ -1,22 +1,57 @@
-# Drill Beam MATLAB
+# BPM Drill AI App
 
-MATLAB simulation code for the Drill Beam project.
+MATLAB app and simulation code for BPM drill-beam simulation and SLM phase export.
 
-## Contents
+## Requirements
 
-- `src/BPM_drill_AI.m`: main FFT-BPM simulation script for generating the SLM phase and 3D beam output.
-- `docs/Bessel Beam.json`: auxiliary optical layout/configuration reference from the local project folder.
-- `docs/BPM_drill_AI_参数说明.md`: 中文参数说明清单，解释主要参数的含义、调节方向和注意事项。
-- `outputs/`: generated `.bmp` and `.tif` files written by the MATLAB script.
+- MATLAB R2021a or newer is recommended.
+- No additional MathWorks toolbox is required for the packaged app.
 
-## Usage
+The rotated SLM batch export uses a local nearest-neighbor crop rotation implementation, so it does not require Image Processing Toolbox.
 
-1. Open `src/BPM_drill_AI.m` in MATLAB.
-2. Adjust the simulation parameters near the top of the script as needed.
-3. Run the script from MATLAB.
-4. Check the `outputs/` folder for generated beam volumes and SLM phase images.
+## Run from Source
 
-## Notes
+Open MATLAB in this folder and run:
 
-- Large experimental data, papers, and presentation files are intentionally not included in this repository.
-- The current script is a standalone script and does not require additional local `.m` dependencies.
+```matlab
+launch_BPM_drill_AI_app
+```
+
+The launcher adds `src/` to the MATLAB path and opens the app.
+
+## Install from Toolbox Package
+
+Use the installer:
+
+```text
+release/BPM_Drill_AI_App.mltbx
+```
+
+In MATLAB, double-click the `.mltbx` file from the Current Folder browser, or install it through the Add-Ons interface. After installation, start the app from the Apps tab, or run:
+
+```matlab
+launch_BPM_drill_AI_app
+```
+
+## Rebuild the Installer
+
+After editing the source, rebuild the `.mltbx` package with:
+
+```matlab
+package_BPM_drill_AI_toolbox
+```
+
+This creates:
+
+```text
+release/BPM_Drill_AI_App.mltbx
+```
+
+## Files
+
+- `launch_BPM_drill_AI_app.m`: app launcher.
+- `src/BPM_drill_AI_app.m`: MATLAB UI.
+- `src/BPM_drill_AI_app_engine.m`: app simulation engine.
+- `src/BPM_drill_AI.m`: script-style simulation entry point.
+- `docs/`: parameter notes and optical-layout reference.
+- `outputs/`: generated `.bmp`, `.tif`, and log outputs.

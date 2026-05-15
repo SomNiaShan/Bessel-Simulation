@@ -853,19 +853,19 @@ end
 function rotatedImage = localRotateSlmPhaseImage(slmPhase8Bit, angleDeg, rotateClockwise)
 % localRotateSlmPhaseImage
 % 作用：把一张 8-bit SLM 相位图旋转指定角度，并保持输出尺寸不变。
-% imrotate 里正角度默认是逆时针，所以顺时针时这里要把角度取负。
+% Positive angle means visually counter-clockwise, so clockwise rotation uses a negative angle.
 
 if mod(angleDeg, 360) == 0 % 如果角度刚好等效于 0 度
     rotatedImage = slmPhase8Bit; % 就直接使用原图，避免 0 度旋转带来不必要的插值/边界处理
     return; % 提前返回
 end
 
-signedAngleDeg = angleDeg; % 先把用户给的角度作为 MATLAB imrotate 的输入角度
+signedAngleDeg = angleDeg; % 先把用户给的角度作为视觉上的逆时针角度
 if rotateClockwise % 如果用户要求顺时针
     signedAngleDeg = -angleDeg; % MATLAB 中负角度代表顺时针
 end
 
-rotatedImage = imrotate(slmPhase8Bit, signedAngleDeg, 'nearest', 'crop'); % nearest 保持 8-bit 灰度级，crop 保持 SLM 图尺寸不变
+rotatedImage = localRotateImageNearestCrop(slmPhase8Bit, signedAngleDeg); % nearest 保持 8-bit 灰度级，crop 保持 SLM 图尺寸不变
 end
 
 function phase8Bit = localPhaseMatrixToUint8(phaseMatrix)
@@ -975,6 +975,27 @@ fileName = ['Drill Beam SLM phase rotated ', directionToken, ' ', angleToken, ' 
     ' omega=', num2str(params.phase.omegaInner), ... % 写入 omega 参数
     ' w=', num2str(params.beam.waistRadiusMm), ... % 写入束腰半径
     '.bmp']; % 文件扩展名
+end
+
+function rotatedImage = localRotateImageNearestCrop(inputImage, angleDeg)
+% Local nearest-neighbor crop rotation, avoiding an Image Processing Toolbox dependency.
+[rowCount, columnCount] = size(inputImage);
+rowCenter = (rowCount + 1) / 2;
+columnCenter = (columnCount + 1) / 2;
+[outputColumns, outputRows] = meshgrid(1:columnCount, 1:rowCount);
+
+xOut = outputColumns - columnCenter;
+yOut = outputRows - rowCenter;
+cosTheta = cosd(angleDeg);
+sinTheta = sind(angleDeg);
+
+sourceColumns = round(cosTheta * xOut + sinTheta * yOut + columnCenter);
+sourceRows = round(-sinTheta * xOut + cosTheta * yOut + rowCenter);
+insideInput = sourceRows >= 1 & sourceRows <= rowCount & sourceColumns >= 1 & sourceColumns <= columnCount;
+
+rotatedImage = zeros(size(inputImage), 'like', inputImage);
+sourceLinearIndex = sub2ind([rowCount, columnCount], sourceRows(insideInput), sourceColumns(insideInput));
+rotatedImage(insideInput) = inputImage(sourceLinearIndex);
 end
 
 function angleToken = localBuildAngleToken(angleDeg)
