@@ -95,7 +95,7 @@ classdef BPM_drill_AI_app < matlab.apps.AppBase
                 'lens2FocalLengthMm', 'lens2FocalLengthMm (mm)';
                 'lens1PositionMm', 'lens1PositionMm (mm)';
                 'lens2PositionMm', 'lens2PositionMm (mm)';
-                'sampleOffsetFromLens2Mm', 'sampleOffsetFromLens2Mm (mm)';
+                'samplePositionMm', 'samplePositionMm (mm)';
                 'lens1Enabled', 'lens1Enabled';
                 'lens2Enabled', 'lens2Enabled';
                 'sampleEnabled', 'sampleEnabled'});
@@ -554,6 +554,8 @@ classdef BPM_drill_AI_app < matlab.apps.AppBase
                 sprintf('Axicon refractive index: %.12g', results.params.phase.axiconIndex);
                 sprintf('Z slices: %d', numel(results.propagation.zValuesMm));
                 sprintf('Pulse peak power: %.12g W', results.derived.pulsePeakPowerW);
+                sprintf('M=%.12g, M2=%.12g', ...
+                    results.derived.optics.M, results.derived.optics.M2);
                 sprintf('beta0=%.12g deg, beta1=%.12g deg, betaMaterial=%.12g deg', ...
                     results.derived.optics.beta0Deg, results.derived.optics.beta1Deg, ...
                     results.derived.optics.betaMaterialDeg);
@@ -705,8 +707,8 @@ classdef BPM_drill_AI_app < matlab.apps.AppBase
                     description = 'z position of lens 1, in mm. BPM applies the lens-1 phase when propagation reaches this position.';
                 case 'optics.lens2PositionMm'
                     description = 'z position of lens 2, in mm. BPM applies the lens-2 phase when propagation reaches this position.';
-                case 'optics.sampleOffsetFromLens2Mm'
-                    description = 'Distance from lens 2 to the sample, in mm. This is used to compute where sample propagation begins.';
+                case 'optics.samplePositionMm'
+                    description = 'Absolute z position of the sample, in mm. BPM switches to sample propagation when it reaches this position.';
                 case 'optics.lens1Enabled'
                     description = 'Applies lens 1 during BPM propagation. When off, the parameter is kept but the lens phase is not applied.';
                 case 'optics.lens2Enabled'

@@ -118,7 +118,7 @@ params.optics = struct( ... % 与传播过程中可能加入的透镜/样品有�
     'lens2FocalLengthMm', 40, ... % 第二片透镜焦距，单位 mm
     'lens1PositionMm', 400, ... % 第一片透镜放置位置，单位 mm
     'lens2PositionMm', 640, ... % 第二片透镜放置位置，单位 mm
-    'sampleOffsetFromLens2Mm', 20, ... % 样品相对第二片透镜再往后的距离，单位 mm
+    'samplePositionMm', 660, ... % 样品在 z 轴上的绝对位置，单位 mm
     'lens1Enabled', true, ... % 是否真的在传播中加入第一片透镜
     'lens2Enabled', true, ... % 是否真的在传播中加入第二片透镜
     'sampleEnabled', true); % 是否真的在传播中切换到样品折射率
@@ -160,6 +160,16 @@ function params = localApplyWorkspaceOverrides(params, overrides)
 
 if ~isstruct(overrides) % 如果用户传入的覆盖参数不是结构体
     error('BPM_drill_AI_overrides must be a struct.'); % 就报错，提醒输入格式不对
+end
+
+if isfield(overrides, 'optics') && isstruct(overrides.optics) && ...
+        isfield(overrides.optics, 'sampleOffsetFromLens2Mm') && ...
+        ~isfield(overrides.optics, 'samplePositionMm')
+    lens2PositionMm = params.optics.lens2PositionMm;
+    if isfield(overrides.optics, 'lens2PositionMm')
+        lens2PositionMm = overrides.optics.lens2PositionMm;
+    end
+    overrides.optics.samplePositionMm = lens2PositionMm + overrides.optics.sampleOffsetFromLens2Mm;
 end
 
 params = localMergeStructs(params, overrides); % 真正执行结构体递归合并
@@ -281,7 +291,9 @@ derived.pulsePeakPowerW = derived.pulseEnergyJ / params.laser.pulseWidthS; % 峰
 
 derived.optics = struct(); % 新建一个 optics 子结构体，用来存和透镜系统有关的派生量
 derived.optics.alphaRad = deg2rad(params.phase.axiconAngleDeg); % 把 axicon 角度从度转换成弧度
-derived.optics.magnification = params.optics.lens2FocalLengthMm / params.optics.lens1FocalLengthMm; % 两片透镜组成的缩放倍率
+derived.optics.M = params.optics.lens2FocalLengthMm / params.optics.lens1FocalLengthMm; % 两片透镜组成的缩放倍率 M=f2/f1
+derived.optics.M2 = derived.optics.M ^ 2; % 缩放倍率平方 M2，用于材料内长度缩放
+derived.optics.magnification = derived.optics.M; % 兼容旧字段名
 derived.optics.beta0Rad = params.phase.axiconIndex * sin(derived.optics.alphaRad) - derived.optics.alphaRad; % 原脚本中的 beta_0，保留原公式
 derived.optics.beta0Deg = rad2deg(derived.optics.beta0Rad); % 把 beta_0 转成角度方便查看
 derived.optics.beta1Rad = atan(tan(derived.optics.beta0Rad) * params.optics.lens1FocalLengthMm / params.optics.lens2FocalLengthMm); % 原脚本中的 beta_1
@@ -290,10 +302,10 @@ derived.optics.betaMaterialRad = asin((params.material.backgroundIndex / params.
 derived.optics.betaMaterialDeg = rad2deg(derived.optics.betaMaterialRad); % 折射角的角度形式
 derived.optics.zFocusMm = params.beam.waistRadiusMm / (2 * tan(derived.optics.beta0Rad)); % 原脚本中的 z_f
 derived.optics.deltaZMm = 0.8 * 2 * derived.optics.zFocusMm; % 原脚本中的 delta_z
-derived.optics.deltaZMaterialMm = derived.optics.magnification ^ 2 * derived.optics.deltaZMm; % 原脚本中的 delta_zm
+derived.optics.deltaZMaterialMm = derived.optics.M2 * derived.optics.deltaZMm; % 原脚本中的 delta_zm
 derived.optics.lens1PositionMm = params.optics.lens1PositionMm; % 第一片透镜位置
 derived.optics.lens2PositionMm = params.optics.lens2PositionMm; % 第二片透镜位置
-derived.optics.samplePositionMm = derived.optics.lens2PositionMm + params.optics.sampleOffsetFromLens2Mm; % 样品位置
+derived.optics.samplePositionMm = params.optics.samplePositionMm; % 样品位置
 end
 
 function phase = localBuildPhaseMaps(grid, params, derived)
@@ -336,7 +348,8 @@ function propagation = localRunBpmPropagation(inputField, grid, params, derived)
 propagation = struct(); % 新建传播结果结构体
 
 if ~params.simulation.useBPM % 如果用户关闭了 BPM
-    localProgressWrite(params, 'BPM OFF: z propagation was skipped.', true); % 打印/记录一条状态信息；使用 ASCII 避免 VS Code 终端乱码
+    message = sprintf('BPM OFF: z propagation was skipped. M=%.12g, M2=%.12g', derived.optics.M, derived.optics.M2); % 记录本次透镜缩放倍率
+    localProgressWrite(params, message, true); % 打印/记录一条状态信息；使用 ASCII 避免 VS Code 终端乱码
     propagation.E3D = reshape(inputField, size(inputField, 1), size(inputField, 2), 1); % 仍然保存成 N x N x 1，保证后处理函数按三维栈读取
     propagation.finalField = inputField; % 最终场也等于输入场
     propagation.zValuesMm = 0; % z 方向只保留 0 这一个位置
@@ -363,7 +376,7 @@ lens1AppliedAtMm = NaN; % 记录第一片透镜到底在哪个 z 步被真正插
 lens2AppliedAtMm = NaN; % 记录第二片透镜真正插入的位置
 sampleAppliedAtMm = NaN; % 记录样品折射率真正开始生效的位置
 progressTimer = tic; % 为 BPM 主循环单独计时
-localProgressStart(params, numel(zValuesMm)); % 打印/记录 BPM 开始运行的信息
+localProgressStart(params, numel(zValuesMm), derived); % 打印/记录 BPM 开始运行的信息
 lastProgressTimeSeconds = -inf; % 记录上一次输出进度的时间；初值设为 -inf 保证第一步会输出
 
 initialZValueMm = zValuesMm(1); % 第一个切片是真正的输入平面 z=0
@@ -407,7 +420,7 @@ for index = 2:numel(zValuesMm) % 逐个 z 切片推进
     [lastProgressTimeSeconds, ~] = localProgressUpdate(params, index, numel(zValuesMm), zValueMm, progressTimer, lastProgressTimeSeconds); % 按时间间隔打印/记录当前进度
 end
 
-localProgressFinish(params, numel(zValuesMm), toc(progressTimer)); % 打印/记录 BPM 结束信息
+localProgressFinish(params, numel(zValuesMm), toc(progressTimer), derived); % 打印/记录 BPM 结束信息
 
 propagation.E3D = fieldStack; % 保存三维传播场
 propagation.finalField = currentField; % 同时保存最终 z 面上的场
@@ -626,11 +639,11 @@ catch
 end
 end
 
-function localProgressStart(params, totalSteps)
+function localProgressStart(params, totalSteps, derived)
 % localProgressStart
 % 作用：在 BPM 主循环开始时输出一条清晰的起始信息。
 
-message = sprintf('BPM START: total_steps=%d', totalSteps); % 组合开始信息；使用 ASCII 避免 VS Code 终端乱码
+message = sprintf('BPM START: total_steps=%d, M=%.12g, M2=%.12g', totalSteps, derived.optics.M, derived.optics.M2); % 组合开始信息；使用 ASCII 避免 VS Code 终端乱码
 localProgressWrite(params, message, true); % 打印/显示开始信息
 end
 
@@ -655,11 +668,11 @@ lastProgressTimeSeconds = elapsedSeconds; % 更新最近一次输出进度的时
 didPrint = true; % 标记当前这一步确实输出了进度
 end
 
-function localProgressFinish(params, totalSteps, elapsedSeconds)
+function localProgressFinish(params, totalSteps, elapsedSeconds, derived)
 % localProgressFinish
 % 作用：在 BPM 主循环结束时输出一条完成信息。
 
-message = sprintf('BPM FINISHED: total_steps=%d, elapsed_s=%.2f', totalSteps, elapsedSeconds); % 组合完成信息；使用 ASCII 避免 VS Code 终端乱码
+message = sprintf('BPM FINISHED: total_steps=%d, elapsed_s=%.2f, M=%.12g, M2=%.12g', totalSteps, elapsedSeconds, derived.optics.M, derived.optics.M2); % 组合完成信息；使用 ASCII 避免 VS Code 终端乱码
 localProgressWrite(params, message, false); % 打印/追加写入日志
 end
 

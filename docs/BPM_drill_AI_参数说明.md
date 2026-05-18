@@ -320,9 +320,10 @@ run('C:/Users/Shan/Desktop/academic/drill-beam-matlab/src/BPM_drill_AI.m');
 - 注意：
   第二片透镜位置是基于它再加 `f1 + f2` 自动算出来的。
 
-#### `sampleOffsetFromLens2Mm`
+#### `samplePositionMm`
 
-- 含义：样品相对于第二片透镜再往后多远。
+- 含义：样品在 z 轴上的绝对位置，单位 mm。
+- 默认值：`660`。
 - 调大后：
   样品更晚进入传播过程。
 - 调小后：
