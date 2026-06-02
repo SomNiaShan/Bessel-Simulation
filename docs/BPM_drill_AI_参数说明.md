@@ -15,7 +15,7 @@
 最常改的通常是这几类：
 
 1. `params.phase`
-   这里决定输出光束长什么样，尤其是 `axiconAngleDeg`、`vortexCharge`、`helicalGamma`、`helicalOrder`、`omegaInner`、`omegaOuter`。
+   这里决定输出光束长什么样，尤其是 `axiconMode` 及其当前主参数、`vortexCharge`、`helicalGamma`、`helicalOrder`、`omegaInner`、`omegaOuter`。
 2. `params.simulation`
    这里决定仿真精度和计算量，尤其是 `N`、`zRangeMm`、`dzMm`。
 3. `params.output`
@@ -195,28 +195,56 @@ run('C:/Users/Shan/Desktop/academic/drill-beam-matlab/src/BPM_drill_AI.m');
 - 调小后：
   Airy 相位变化更快、更陡。
 
+#### `axiconMode`
+
+- 含义：选择 axicon 的主定义方式。
+- 可选值：
+  `coneAngle`、`radialPeriodMm`、`radialPeriodPx`、`physicalEquivalent`。
+- 注意：
+  程序内部会先把当前模式换算成统一的 `derived.axicon.krRadPerMm` 和
+  `derived.axicon.coneAngleDeg`，后续相位和传播距离只使用这两个等效量。
+  因此多个 axicon 输入参数不会同时生效，只有当前模式对应的参数是主输入。
+  在 APP 里，未选中的 axicon 输入框会作为只读等效值随当前主输入自动刷新。
+
+#### `axiconConeAngleDeg`
+
+- 含义：SLM 全息 axicon 的有效出射锥角 `beta`，单位度。
+- 生效条件：
+  `axiconMode = 'coneAngle'`。
+- 调大后：
+  径向相位斜率变大，理论最大无衍射距离会缩短。
+
+#### `axiconRadialPeriodMm`
+
+- 含义：SLM 径向 `2*pi` 相位周期，单位 mm。
+- 生效条件：
+  `axiconMode = 'radialPeriodMm'`。
+- 调小后：
+  径向相位斜率变大，等效锥角变大。
+
+#### `axiconRadialPeriodPx`
+
+- 含义：SLM 径向 `2*pi` 相位周期，单位为当前输出相位矩阵的像素。
+- 生效条件：
+  `axiconMode = 'radialPeriodPx'`。
+- 注意：
+  这里的 1 pixel 对应 `simulation.sizeMm / simulation.N` mm。
+  如果改变 `N` 或 `sizeMm`，同一个像素周期对应的物理周期也会变化。
+
 #### `axiconIndex`
 
-- 含义：axicon 材料折射率。
-- 调大后：
-  会改变角度换算相关派生量，如 `beta0`、`beta1`。
-- 调小后：
-  这些派生角度相应减小。
-- 注意：
-  当前主相位 `phase.axicon` 的公式里主要直接用了 `axiconAngleDeg` 和背景波数；
-  `axiconIndex` 主要体现在派生光学量里。
+- 含义：等效真实 axicon 的材料折射率。
+- 生效条件：
+  仅当 `axiconMode = 'physicalEquivalent'` 时，它和 `axiconAngleDeg` 共同决定有效锥角。
 
 #### `axiconAngleDeg`
 
-- 含义：axicon 底角，通常是最敏感的参数之一。
-- 调大后：
-  径向相位斜率变大，Bessel 类结构更“陡”，理论最大无衍射距离会缩短。
-- 调小后：
-  相位斜率变缓，理论无衍射距离变长。
-- 直接影响：
-  `phase_axicon`、曲线 Bessel 的 `z_max`、多个派生角。
-- 常见风险：
-  太小或太大都可能让输出与实验直觉不一致。
+- 含义：等效真实 axicon 的底角 `alpha`，单位度。
+- 生效条件：
+  仅当 `axiconMode = 'physicalEquivalent'` 时生效。
+- 注意：
+  新版本里 `phase.axicon` 不再直接使用 `axiconAngleDeg`；
+  它会先换算成有效锥角 `beta` 和径向波矢 `k_r`。
 
 #### `curvedMaxShiftMm`
 
@@ -535,7 +563,8 @@ run('C:/Users/Shan/Desktop/academic/drill-beam-matlab/src/BPM_drill_AI.m');
 - `helicalOrder`
 - `omegaInner`
 - `omegaOuter`
-- `axiconAngleDeg`
+- `axiconMode`
+- `axiconConeAngleDeg` / `axiconRadialPeriodMm` / `axiconRadialPeriodPx`
 
 ### 只想让仿真快一点
 

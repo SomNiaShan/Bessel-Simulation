@@ -18,6 +18,7 @@ classdef BPM_drill_AI_app < matlab.apps.AppBase
         LogTextArea
         SummaryTextArea
         IsRunning = false
+        IsSyncingAxiconControls = false
     end
 
     methods (Access = public)
@@ -79,8 +80,12 @@ classdef BPM_drill_AI_app < matlab.apps.AppBase
             app.addParameterTab(parameterTabs, 'phase', 'Phase', {
                 'airyStrength', 'airyStrength';
                 'airyScaleMm', 'airyScaleMm (mm)';
+                'axiconMode', 'Axicon definition';
+                'axiconConeAngleDeg', 'Cone angle beta (deg)';
+                'axiconRadialPeriodMm', 'Radial period (mm)';
+                'axiconRadialPeriodPx', 'Radial period (px)';
                 'axiconIndex', 'Axicon refractive index (n)';
-                'axiconAngleDeg', 'axiconAngleDeg (deg)';
+                'axiconAngleDeg', 'Physical base angle alpha (deg)';
                 'curvedMaxShiftMm', 'curvedMaxShiftMm (mm)';
                 'compensationPhase', 'compensationPhase';
                 'vortexCharge', 'vortexCharge';
@@ -241,13 +246,23 @@ classdef BPM_drill_AI_app < matlab.apps.AppBase
                 infoLabel.Layout.Row = index;
                 infoLabel.Layout.Column = 2;
 
-                if islogical(value)
+                if strcmp(groupName, 'phase') && strcmp(fieldName, 'axiconMode')
+                    control = uidropdown(grid, ...
+                        'Items', app.axiconModeOptions(), ...
+                        'Value', char(string(displayValue)), ...
+                        'Tooltip', tooltip, ...
+                        'ValueChangedFcn', @(~, ~)app.axiconModeChanged());
+                elseif islogical(value)
                     control = uicheckbox(grid, 'Text', '', 'Value', logical(displayValue), 'Tooltip', tooltip);
                 elseif ischar(value) || isstring(value)
                     control = uieditfield(grid, 'text', 'Value', char(string(displayValue)), 'Tooltip', tooltip);
                 else
                     control = uieditfield(grid, 'numeric', 'Value', double(displayValue), 'Tooltip', tooltip);
                     control.ValueDisplayFormat = '%.12g';
+                end
+                if app.isAxiconSyncControl(groupName, fieldName) && ...
+                        ~(strcmp(groupName, 'phase') && strcmp(fieldName, 'axiconMode'))
+                    control.ValueChangedFcn = @(~, ~)app.axiconParameterChanged();
                 end
                 control.Layout.Row = index;
                 control.Layout.Column = 3;
@@ -375,8 +390,32 @@ classdef BPM_drill_AI_app < matlab.apps.AppBase
             if params.phase.airyScaleMm == 0
                 error('params.phase.airyScaleMm must be nonzero.');
             end
-            if params.phase.axiconIndex <= 0
-                error('Axicon refractive index must be positive.');
+            if ~any(strcmp(params.phase.axiconMode, app.axiconModeOptions()))
+                error('params.phase.axiconMode must be coneAngle, radialPeriodMm, radialPeriodPx, or physicalEquivalent.');
+            end
+            if params.material.backgroundIndex <= 0 || params.material.sampleIndex <= 0
+                error('Material refractive indices must be positive.');
+            end
+            switch params.phase.axiconMode
+                case 'coneAngle'
+                    if params.phase.axiconConeAngleDeg <= 0 || params.phase.axiconConeAngleDeg >= 90
+                        error('Axicon cone angle beta must be between 0 and 90 degrees.');
+                    end
+                case 'radialPeriodMm'
+                    if params.phase.axiconRadialPeriodMm <= 0
+                        error('Axicon radial period in mm must be positive.');
+                    end
+                case 'radialPeriodPx'
+                    if params.phase.axiconRadialPeriodPx <= 0
+                        error('Axicon radial period in pixels must be positive.');
+                    end
+                case 'physicalEquivalent'
+                    if params.phase.axiconIndex <= 0
+                        error('Axicon refractive index must be positive.');
+                    end
+                    if params.phase.axiconAngleDeg <= 0
+                        error('Physical axicon base angle alpha must be positive.');
+                    end
             end
             if params.optics.lens1FocalLengthMm <= 0 || params.optics.lens2FocalLengthMm <= 0
                 error('Lens focal lengths must be positive.');
@@ -418,6 +457,8 @@ classdef BPM_drill_AI_app < matlab.apps.AppBase
                     end
                 end
             end
+            app.updateAxiconControlStates();
+            app.syncAxiconEquivalentControls();
         end
 
         function updateResultPreview(app, results)
@@ -551,7 +592,13 @@ classdef BPM_drill_AI_app < matlab.apps.AppBase
                     results.params.simulation.N, results.params.simulation.sizeMm, ...
                     results.params.simulation.zRangeMm, results.params.simulation.dzMm);
                 sprintf('Wavelength: %.12g nm', app.mmToNm(results.params.laser.wavelengthMm));
-                sprintf('Axicon refractive index: %.12g', results.params.phase.axiconIndex);
+                sprintf('Axicon mode: %s', results.derived.axicon.mode);
+                sprintf('Axicon effective beta: %.12g deg, kr=%.12g rad/mm', ...
+                    results.derived.axicon.coneAngleDeg, results.derived.axicon.krRadPerMm);
+                sprintf('Axicon radial period: %.12g mm (%.12g px)', ...
+                    results.derived.axicon.radialPeriodMm, results.derived.axicon.radialPeriodPx);
+                sprintf('Physical-equivalent fields: n=%.12g, alpha=%.12g deg', ...
+                    results.derived.axicon.physicalIndex, results.derived.axicon.physicalBaseAngleDeg);
                 sprintf('Z slices: %d', numel(results.propagation.zValuesMm));
                 sprintf('Pulse peak power: %.12g W', results.derived.pulsePeakPowerW);
                 sprintf('M=%.12g, M2=%.12g', ...
@@ -633,6 +680,183 @@ classdef BPM_drill_AI_app < matlab.apps.AppBase
             value = char(string(control.Value));
         end
 
+        function axiconModeChanged(app)
+            app.updateAxiconControlStates();
+            app.syncAxiconEquivalentControls();
+            modeControlKey = app.controlKey('phase', 'axiconMode');
+            if isfield(app.Controls, modeControlKey)
+                app.appendStatus(sprintf('Axicon definition mode: %s', char(string(app.Controls.(modeControlKey).Value))));
+            end
+        end
+
+        function axiconParameterChanged(app)
+            app.syncAxiconEquivalentControls();
+        end
+
+        function updateAxiconControlStates(app)
+            modeKey = app.controlKey('phase', 'axiconMode');
+            if ~isfield(app.Controls, modeKey)
+                return;
+            end
+
+            mode = char(string(app.Controls.(modeKey).Value));
+            axiconFields = {'axiconConeAngleDeg', 'axiconRadialPeriodMm', ...
+                'axiconRadialPeriodPx', 'axiconIndex', 'axiconAngleDeg'};
+            for index = 1:numel(axiconFields)
+                key = app.controlKey('phase', axiconFields{index});
+                if isfield(app.Controls, key)
+                    app.Controls.(key).Enable = 'off';
+                end
+            end
+
+            switch mode
+                case 'coneAngle'
+                    activeFields = {'axiconConeAngleDeg'};
+                case 'radialPeriodMm'
+                    activeFields = {'axiconRadialPeriodMm'};
+                case 'radialPeriodPx'
+                    activeFields = {'axiconRadialPeriodPx'};
+                case 'physicalEquivalent'
+                    activeFields = {'axiconIndex', 'axiconAngleDeg'};
+                otherwise
+                    activeFields = {};
+            end
+
+            for index = 1:numel(activeFields)
+                key = app.controlKey('phase', activeFields{index});
+                if isfield(app.Controls, key)
+                    app.Controls.(key).Enable = 'on';
+                end
+            end
+        end
+
+        function syncAxiconEquivalentControls(app)
+            if app.IsSyncingAxiconControls
+                return;
+            end
+            requiredKeys = {
+                app.controlKey('phase', 'axiconMode');
+                app.controlKey('phase', 'axiconConeAngleDeg');
+                app.controlKey('phase', 'axiconRadialPeriodMm');
+                app.controlKey('phase', 'axiconRadialPeriodPx');
+                app.controlKey('phase', 'axiconIndex');
+                app.controlKey('phase', 'axiconAngleDeg');
+                app.controlKey('simulation', 'N');
+                app.controlKey('simulation', 'sizeMm');
+                app.controlKey('laser', 'wavelengthMm');
+                app.controlKey('material', 'backgroundIndex')};
+            for index = 1:numel(requiredKeys)
+                if ~isfield(app.Controls, requiredKeys{index})
+                    return;
+                end
+            end
+
+            app.IsSyncingAxiconControls = true;
+            cleanup = onCleanup(@()app.clearAxiconSyncFlag());
+            try
+                mode = char(string(app.Controls.(app.controlKey('phase', 'axiconMode')).Value));
+                sampleCount = round(app.Controls.(app.controlKey('simulation', 'N')).Value);
+                gridSizeMm = app.Controls.(app.controlKey('simulation', 'sizeMm')).Value;
+                wavelengthMm = app.nmToMm(app.Controls.(app.controlKey('laser', 'wavelengthMm')).Value);
+                backgroundIndex = app.Controls.(app.controlKey('material', 'backgroundIndex')).Value;
+                axiconIndex = app.Controls.(app.controlKey('phase', 'axiconIndex')).Value;
+
+                if sampleCount <= 0 || gridSizeMm <= 0 || wavelengthMm <= 0 || ...
+                        backgroundIndex <= 0 || axiconIndex <= 0
+                    return;
+                end
+
+                gridPixelPitchMm = gridSizeMm / sampleCount;
+                kBackground = 2 * pi * backgroundIndex / wavelengthMm;
+                [coneAngleRad, krRadPerMm] = app.resolveAxiconControlsToConeAndKr(mode, kBackground, gridPixelPitchMm);
+                if ~isfinite(coneAngleRad) || ~isfinite(krRadPerMm) || ...
+                        coneAngleRad <= 0 || coneAngleRad >= pi / 2 || ...
+                        krRadPerMm <= 0 || krRadPerMm >= kBackground
+                    return;
+                end
+
+                coneAngleDeg = rad2deg(coneAngleRad);
+                radialPeriodMm = 2 * pi / krRadPerMm;
+                radialPeriodPx = radialPeriodMm / gridPixelPitchMm;
+                physicalBaseAngleDeg = app.equivalentPhysicalBaseAngleDeg(coneAngleRad, axiconIndex, backgroundIndex);
+
+                app.setAxiconEquivalentValue('axiconConeAngleDeg', coneAngleDeg, mode, 'coneAngle');
+                app.setAxiconEquivalentValue('axiconRadialPeriodMm', radialPeriodMm, mode, 'radialPeriodMm');
+                app.setAxiconEquivalentValue('axiconRadialPeriodPx', radialPeriodPx, mode, 'radialPeriodPx');
+                if ~strcmp(mode, 'physicalEquivalent') && isfinite(physicalBaseAngleDeg)
+                    app.Controls.(app.controlKey('phase', 'axiconAngleDeg')).Value = physicalBaseAngleDeg;
+                end
+            catch
+            end
+            clear cleanup;
+        end
+
+        function clearAxiconSyncFlag(app)
+            app.IsSyncingAxiconControls = false;
+        end
+
+        function [coneAngleRad, krRadPerMm] = resolveAxiconControlsToConeAndKr(app, mode, kBackground, gridPixelPitchMm)
+            switch mode
+                case 'coneAngle'
+                    coneAngleRad = deg2rad(app.Controls.(app.controlKey('phase', 'axiconConeAngleDeg')).Value);
+                    krRadPerMm = kBackground * sin(coneAngleRad);
+                case 'radialPeriodMm'
+                    radialPeriodMm = app.Controls.(app.controlKey('phase', 'axiconRadialPeriodMm')).Value;
+                    krRadPerMm = 2 * pi / radialPeriodMm;
+                    coneAngleRad = asin(krRadPerMm / kBackground);
+                case 'radialPeriodPx'
+                    radialPeriodPx = app.Controls.(app.controlKey('phase', 'axiconRadialPeriodPx')).Value;
+                    radialPeriodMm = radialPeriodPx * gridPixelPitchMm;
+                    krRadPerMm = 2 * pi / radialPeriodMm;
+                    coneAngleRad = asin(krRadPerMm / kBackground);
+                case 'physicalEquivalent'
+                    axiconIndex = app.Controls.(app.controlKey('phase', 'axiconIndex')).Value;
+                    backgroundIndex = app.Controls.(app.controlKey('material', 'backgroundIndex')).Value;
+                    physicalBaseAngleRad = deg2rad(app.Controls.(app.controlKey('phase', 'axiconAngleDeg')).Value);
+                    coneAngleRad = asin((axiconIndex / backgroundIndex) * sin(physicalBaseAngleRad)) - physicalBaseAngleRad;
+                    krRadPerMm = kBackground * sin(coneAngleRad);
+                otherwise
+                    coneAngleRad = NaN;
+                    krRadPerMm = NaN;
+            end
+        end
+
+        function baseAngleDeg = equivalentPhysicalBaseAngleDeg(~, coneAngleRad, axiconIndex, backgroundIndex)
+            indexRatio = axiconIndex / backgroundIndex;
+            denominator = indexRatio - cos(coneAngleRad);
+            if denominator <= 0
+                baseAngleDeg = NaN;
+                return;
+            end
+            baseAngleDeg = rad2deg(atan2(sin(coneAngleRad), denominator));
+        end
+
+        function setAxiconEquivalentValue(app, fieldName, value, currentMode, fieldMode)
+            if ~strcmp(currentMode, fieldMode) && isfinite(value)
+                app.Controls.(app.controlKey('phase', fieldName)).Value = value;
+            end
+        end
+
+        function options = axiconModeOptions(~)
+            options = {'coneAngle', 'radialPeriodMm', 'radialPeriodPx', 'physicalEquivalent'};
+        end
+
+        function isMatch = isAxiconSyncControl(~, groupName, fieldName)
+            paramPath = sprintf('%s.%s', groupName, fieldName);
+            syncPaths = {
+                'simulation.N';
+                'simulation.sizeMm';
+                'laser.wavelengthMm';
+                'material.backgroundIndex';
+                'phase.axiconMode';
+                'phase.axiconConeAngleDeg';
+                'phase.axiconRadialPeriodMm';
+                'phase.axiconRadialPeriodPx';
+                'phase.axiconIndex';
+                'phase.axiconAngleDeg'};
+            isMatch = any(strcmp(paramPath, syncPaths));
+        end
+
         function key = controlKey(~, groupName, fieldName)
             key = sprintf('%s__%s', groupName, fieldName);
         end
@@ -678,10 +902,18 @@ classdef BPM_drill_AI_app < matlab.apps.AppBase
                     description = 'Strength of the cubic Airy phase term. Set to 0 to disable the Airy phase.';
                 case 'phase.airyScaleMm'
                     description = 'Transverse scale of the Airy phase, in mm. This controls how quickly the cubic phase changes with position.';
+                case 'phase.axiconMode'
+                    description = 'Selects which axicon parameter is active. The engine converts the selected definition to one radial phase slope and cone angle.';
+                case 'phase.axiconConeAngleDeg'
+                    description = 'Effective holographic axicon cone angle beta, in degrees. Active when axiconMode is coneAngle.';
+                case 'phase.axiconRadialPeriodMm'
+                    description = 'Radial 2pi phase period of the SLM axicon, in mm. Active when axiconMode is radialPeriodMm.';
+                case 'phase.axiconRadialPeriodPx'
+                    description = 'Radial 2pi phase period in pixels of the generated phase matrix. Active when axiconMode is radialPeriodPx.';
                 case 'phase.axiconIndex'
-                    description = 'Refractive index of the axicon, used for axicon and Bessel-beam angle calculations.';
+                    description = 'Refractive index of the equivalent physical axicon. Active only when axiconMode is physicalEquivalent.';
                 case 'phase.axiconAngleDeg'
-                    description = 'Axicon base angle, in degrees. This controls the radial linear phase and approximate non-diffracting propagation distance.';
+                    description = 'Base angle alpha of the equivalent physical axicon, in degrees. Active only when axiconMode is physicalEquivalent.';
                 case 'phase.curvedMaxShiftMm'
                     description = 'Target lateral shift at the end of the curved Bessel trajectory. Set to 0 to disable the curved trajectory.';
                 case 'phase.compensationPhase'

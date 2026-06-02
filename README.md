@@ -19,6 +19,18 @@ launch_BPM_drill_AI_app
 
 The launcher adds `src/` to the MATLAB path and opens the app.
 
+## Axicon Definition Modes
+
+The Phase tab now uses `axiconMode` to choose one active axicon definition:
+
+- `coneAngle`: edit the effective holographic cone angle `beta`.
+- `radialPeriodMm`: edit the radial `2*pi` SLM phase period in mm.
+- `radialPeriodPx`: edit the radial `2*pi` period in generated phase-map pixels.
+- `physicalEquivalent`: edit an equivalent physical axicon refractive index and base angle.
+
+Internally, all modes are converted to one radial phase slope `k_r` and one effective cone angle before propagation.
+Inactive axicon fields are read-only equivalents and update in the app when the active definition changes.
+
 ## Install from Toolbox Package
 
 Use the installer:

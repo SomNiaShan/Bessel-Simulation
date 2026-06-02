@@ -102,6 +102,10 @@ params.beam = struct( ... % 与入射光束横向包络有关的参数
 params.phase = struct( ... % 与相位构造有关的参数
     'airyStrength', 0, ... % Airy 三次相位的强度系数；0 表示关闭
     'airyScaleMm', 1, ... % Airy 相位里的尺度参数，单位 mm
+    'axiconMode', 'coneAngle', ... % axicon 定义方式：coneAngle / radialPeriodMm / radialPeriodPx / physicalEquivalent
+    'axiconConeAngleDeg', 0.428775541709431, ... % SLM 全息 axicon 的有效出射锥角 beta，单位度
+    'axiconRadialPeriodMm', 0.137502962948922, ... % SLM 径向 2pi 相位周期，单位 mm
+    'axiconRadialPeriodPx', 17.1878703686153, ... % SLM 径向 2pi 相位周期，单位为当前仿真像素
     'axiconIndex', 1.4287, ... % axicon 材料折射率
     'axiconAngleDeg', 1, ... % axicon 底角，单位度
     'curvedMaxShiftMm', 0, ... % 曲线 Bessel 末端期望横向偏移量，单位 mm
@@ -172,7 +176,29 @@ if isfield(overrides, 'optics') && isstruct(overrides.optics) && ...
     overrides.optics.samplePositionMm = lens2PositionMm + overrides.optics.sampleOffsetFromLens2Mm;
 end
 
+overrides = localNormalizeLegacyAxiconOverrides(overrides); % 兼容旧脚本里只覆盖 axiconAngleDeg/axiconIndex 的用法
 params = localMergeStructs(params, overrides); % 真正执行结构体递归合并
+end
+
+function overrides = localNormalizeLegacyAxiconOverrides(overrides)
+% localNormalizeLegacyAxiconOverrides
+% 作用：如果旧的 overrides 只设置了真实 axicon 的 n/底角，
+% 就自动切到 physicalEquivalent，避免旧参数被新的默认 coneAngle 模式忽略。
+
+if ~isfield(overrides, 'phase') || ~isstruct(overrides.phase)
+    return;
+end
+
+phaseFields = fieldnames(overrides.phase);
+usesPhysicalFields = any(strcmp(phaseFields, 'axiconIndex')) || any(strcmp(phaseFields, 'axiconAngleDeg'));
+usesNewDefinitionFields = any(strcmp(phaseFields, 'axiconMode')) || ...
+    any(strcmp(phaseFields, 'axiconConeAngleDeg')) || ...
+    any(strcmp(phaseFields, 'axiconRadialPeriodMm')) || ...
+    any(strcmp(phaseFields, 'axiconRadialPeriodPx'));
+
+if usesPhysicalFields && ~usesNewDefinitionFields
+    overrides.phase.axiconMode = 'physicalEquivalent';
+end
 end
 
 function merged = localMergeStructs(baseStruct, overrideStruct)
@@ -288,17 +314,22 @@ derived.kBackground = 2 * pi * params.material.backgroundIndex / params.laser.wa
 derived.kSample = 2 * pi * params.material.sampleIndex / params.laser.wavelengthMm; % 样品中的总波数 k_m
 derived.pulseEnergyJ = params.laser.powerW / params.laser.repetitionRateHz; % 单脉冲能量 = 平均功率 / 重复频率
 derived.pulsePeakPowerW = derived.pulseEnergyJ / params.laser.pulseWidthS; % 峰值功率 = 单脉冲能量 / 脉宽
+derived.axicon = localResolveAxiconDefinition(params, derived.kBackground); % 把不同 axicon 输入模式统一解析成 kr 和有效锥角 beta
 
 derived.optics = struct(); % 新建一个 optics 子结构体，用来存和透镜系统有关的派生量
-derived.optics.alphaRad = deg2rad(params.phase.axiconAngleDeg); % 把 axicon 角度从度转换成弧度
+derived.optics.alphaRad = derived.axicon.physicalBaseAngleRad; % 兼容旧字段名：真实 axicon 底角 alpha
 derived.optics.M = params.optics.lens2FocalLengthMm / params.optics.lens1FocalLengthMm; % 两片透镜组成的缩放倍率 M=f2/f1
 derived.optics.M2 = derived.optics.M ^ 2; % 缩放倍率平方 M2，用于材料内长度缩放
 derived.optics.magnification = derived.optics.M; % 兼容旧字段名
-derived.optics.beta0Rad = params.phase.axiconIndex * sin(derived.optics.alphaRad) - derived.optics.alphaRad; % 原脚本中的 beta_0，保留原公式
+derived.optics.beta0Rad = derived.axicon.coneAngleRad; % beta_0 现在表示全息 axicon 的有效出射锥角
 derived.optics.beta0Deg = rad2deg(derived.optics.beta0Rad); % 把 beta_0 转成角度方便查看
 derived.optics.beta1Rad = atan(tan(derived.optics.beta0Rad) * params.optics.lens1FocalLengthMm / params.optics.lens2FocalLengthMm); % 原脚本中的 beta_1
 derived.optics.beta1Deg = rad2deg(derived.optics.beta1Rad); % 把 beta_1 转成角度
-derived.optics.betaMaterialRad = asin((params.material.backgroundIndex / params.material.sampleIndex) * sin(derived.optics.beta1Rad)); % 入射到样品后对应的折射角
+betaMaterialArgument = (params.material.backgroundIndex / params.material.sampleIndex) * sin(derived.optics.beta1Rad); % Snell 定律里的 asin 自变量
+if abs(betaMaterialArgument) > 1
+    error('Effective material cone angle is invalid because asin argument is %.12g.', betaMaterialArgument);
+end
+derived.optics.betaMaterialRad = asin(betaMaterialArgument); % 入射到样品后对应的折射角
 derived.optics.betaMaterialDeg = rad2deg(derived.optics.betaMaterialRad); % 折射角的角度形式
 derived.optics.zFocusMm = params.beam.waistRadiusMm / (2 * tan(derived.optics.beta0Rad)); % 原脚本中的 z_f
 derived.optics.deltaZMm = 0.8 * 2 * derived.optics.zFocusMm; % 原脚本中的 delta_z
@@ -306,6 +337,79 @@ derived.optics.deltaZMaterialMm = derived.optics.M2 * derived.optics.deltaZMm; %
 derived.optics.lens1PositionMm = params.optics.lens1PositionMm; % 第一片透镜位置
 derived.optics.lens2PositionMm = params.optics.lens2PositionMm; % 第二片透镜位置
 derived.optics.samplePositionMm = params.optics.samplePositionMm; % 样品位置
+end
+
+function axicon = localResolveAxiconDefinition(params, kBackground)
+% localResolveAxiconDefinition
+% 作用：把 APP/脚本里多种 axicon 定义方式统一转换成 SLM 真正使用的径向相位斜率 kr。
+
+mode = char(string(params.phase.axiconMode)); % 当前 axicon 定义模式
+validModes = {'coneAngle', 'radialPeriodMm', 'radialPeriodPx', 'physicalEquivalent'};
+if ~any(strcmp(mode, validModes))
+    error('params.phase.axiconMode must be coneAngle, radialPeriodMm, radialPeriodPx, or physicalEquivalent.');
+end
+
+gridPixelPitchMm = params.simulation.sizeMm / params.simulation.N; % 当前输出相位矩阵的像素间距，单位 mm/pixel
+physicalBaseAngleRad = deg2rad(params.phase.axiconAngleDeg); % 真实 axicon 等效模式使用的底角 alpha
+
+switch mode
+    case 'coneAngle'
+        coneAngleRad = deg2rad(params.phase.axiconConeAngleDeg);
+        krRadPerMm = kBackground * sin(coneAngleRad);
+    case 'radialPeriodMm'
+        radialPeriodMm = params.phase.axiconRadialPeriodMm;
+        if radialPeriodMm <= 0
+            error('params.phase.axiconRadialPeriodMm must be positive.');
+        end
+        krRadPerMm = 2 * pi / radialPeriodMm;
+        sinConeAngle = krRadPerMm / kBackground;
+        if sinConeAngle <= 0 || sinConeAngle >= 1
+            error('params.phase.axiconRadialPeriodMm is too small for the current wavelength/background index.');
+        end
+        coneAngleRad = asin(sinConeAngle);
+    case 'radialPeriodPx'
+        radialPeriodPx = params.phase.axiconRadialPeriodPx;
+        if radialPeriodPx <= 0
+            error('params.phase.axiconRadialPeriodPx must be positive.');
+        end
+        radialPeriodMm = radialPeriodPx * gridPixelPitchMm;
+        krRadPerMm = 2 * pi / radialPeriodMm;
+        sinConeAngle = krRadPerMm / kBackground;
+        if sinConeAngle <= 0 || sinConeAngle >= 1
+            error('params.phase.axiconRadialPeriodPx is too small for the current wavelength/background index.');
+        end
+        coneAngleRad = asin(sinConeAngle);
+    case 'physicalEquivalent'
+        if params.phase.axiconIndex <= 0 || params.material.backgroundIndex <= 0
+            error('Axicon and background refractive indices must be positive.');
+        end
+        snellArgument = (params.phase.axiconIndex / params.material.backgroundIndex) * sin(physicalBaseAngleRad);
+        if abs(snellArgument) > 1
+            error('Physical-equivalent axicon is invalid because asin argument is %.12g.', snellArgument);
+        end
+        coneAngleRad = asin(snellArgument) - physicalBaseAngleRad;
+        krRadPerMm = kBackground * sin(coneAngleRad);
+end
+
+if ~isfinite(coneAngleRad) || coneAngleRad <= 0 || coneAngleRad >= pi / 2
+    error('Resolved axicon cone angle must be between 0 and 90 degrees.');
+end
+if ~isfinite(krRadPerMm) || krRadPerMm <= 0 || krRadPerMm >= kBackground
+    error('Resolved axicon radial wavevector must be positive and smaller than the background wave number.');
+end
+
+axicon = struct(); % 保存统一后的 axicon 派生量
+axicon.mode = mode;
+axicon.krRadPerMm = krRadPerMm;
+axicon.radialPhaseSlopeRadPerMm = krRadPerMm;
+axicon.coneAngleRad = coneAngleRad;
+axicon.coneAngleDeg = rad2deg(coneAngleRad);
+axicon.radialPeriodMm = 2 * pi / krRadPerMm;
+axicon.radialPeriodPx = axicon.radialPeriodMm / gridPixelPitchMm;
+axicon.gridPixelPitchMm = gridPixelPitchMm;
+axicon.physicalIndex = params.phase.axiconIndex;
+axicon.physicalBaseAngleRad = physicalBaseAngleRad;
+axicon.physicalBaseAngleDeg = params.phase.axiconAngleDeg;
 end
 
 function phase = localBuildPhaseMaps(grid, params, derived)
@@ -317,11 +421,11 @@ function phase = localBuildPhaseMaps(grid, params, derived)
 phase = struct(); % 新建相位结构体
 
 phase.airy = params.phase.airyStrength * ((grid.x ./ params.phase.airyScaleMm) .^ 3 + (grid.y ./ params.phase.airyScaleMm) .^ 3); % Airy 三次相位
-phase.axicon = derived.kBackground * (params.phase.axiconIndex - params.material.backgroundIndex) * tand(params.phase.axiconAngleDeg) * (grid.sizeMm / 2 - grid.r); % axicon 径向线性相位
+phase.axicon = derived.axicon.krRadPerMm * (grid.sizeMm / 2 - grid.r); % axicon 径向线性相位，统一由解析后的 kr 决定
 
-phase.maxPropagationMm = (grid.sizeMm / 2) / tand(params.phase.axiconAngleDeg); % 几何近似下的最大无衍射传播距离
+phase.maxPropagationMm = (grid.sizeMm / 2) / tan(derived.axicon.coneAngleRad); % 几何近似下的最大无衍射传播距离
 phase.curvatureA = params.phase.curvedMaxShiftMm / (phase.maxPropagationMm ^ 2); % 抛物线轨迹 x = A z^2 中的曲率系数 A
-phase.curve = derived.kBackground * phase.curvatureA * (grid.r ./ tand(params.phase.axiconAngleDeg)) .* grid.x; % 让 Bessel 轨迹发生横向弯曲的相位项
+phase.curve = derived.kBackground * phase.curvatureA * (grid.r ./ tan(derived.axicon.coneAngleRad)) .* grid.x; % 让 Bessel 轨迹发生横向弯曲的相位项
 
 phase.compensation = params.phase.compensationPhase; % 保留额外补偿相位接口
 phase.vortex = params.phase.vortexCharge * grid.theta; % 标准涡旋相位 l*theta
@@ -906,13 +1010,32 @@ rowRange = rowStart:rowEnd; % 最终返回的行索引范围
 columnRange = columnStart:columnEnd; % 最终返回的列索引范围
 end
 
+function token = localBuildAxiconDefinitionToken(params)
+% localBuildAxiconDefinitionToken
+% 作用：把当前 axicon 主定义写进导出文件名，避免 coneAngle/radialPeriod/physical 模式混淆。
+
+mode = char(string(params.phase.axiconMode));
+switch mode
+    case 'coneAngle'
+        token = ['axiconMode=coneAngle beta=', num2str(params.phase.axiconConeAngleDeg), 'deg'];
+    case 'radialPeriodMm'
+        token = ['axiconMode=radialPeriodMm period=', num2str(params.phase.axiconRadialPeriodMm), 'mm'];
+    case 'radialPeriodPx'
+        token = ['axiconMode=radialPeriodPx period=', num2str(params.phase.axiconRadialPeriodPx), 'px'];
+    case 'physicalEquivalent'
+        token = ['axiconMode=physicalEquivalent n=', num2str(params.phase.axiconIndex), ' alpha=', num2str(params.phase.axiconAngleDeg), 'deg'];
+    otherwise
+        token = ['axiconMode=', mode];
+end
+end
+
 function fileName = localBuild3DFileName(params)
 % localBuild3DFileName
 % 作用：按照当前参数生成 3D 强度 tif 的文件名。
 
 fileName = ['Drill Beam 3D ', ... % 文件名前缀，标明这是 3D 强度
     num2str(params.simulation.sizeMm), 'x', num2str(params.simulation.sizeMm), 'x', num2str(params.simulation.zRangeMm), ' mm ', ... % 写入横向尺寸和 z 传播范围
-    'alpha=', num2str(params.phase.axiconAngleDeg), ... % 写入 axicon 角度
+    localBuildAxiconDefinitionToken(params), ... % 写入当前 axicon 定义
     ' lc=', num2str(params.phase.vortexCharge), ... % 写入涡旋拓扑荷
     ' gamma=', num2str(params.phase.helicalGamma), ... % 写入 helical 调制度
     ' m=', num2str(params.phase.helicalOrder), ... % 写入 helical 阶数
@@ -928,7 +1051,7 @@ function fileName = localBuildSlmPhaseFileName(params)
 
 fileName = ['Drill Beam SLM phase ', ... % 文件名前缀，标明这是总 SLM 相位
     num2str(params.simulation.sizeMm), 'x', num2str(params.simulation.sizeMm), ' mm ', ... % 写入横向尺寸
-    'alpha=', num2str(params.phase.axiconAngleDeg), ... % 写入 axicon 角度
+    localBuildAxiconDefinitionToken(params), ... % 写入当前 axicon 定义
     ' lc=', num2str(params.phase.vortexCharge), ... % 写入涡旋拓扑荷
     ' gamma=', num2str(params.phase.helicalGamma), ... % 写入 helical 调制度
     ' m=', num2str(params.phase.helicalOrder), ... % 写入 helical 阶数
@@ -943,7 +1066,7 @@ function fileName = localBuildHelicalPhaseFileName(params)
 
 fileName = ['Drill Beam Helical phase ', ... % 文件名前缀，标明这是 helical 相位
     num2str(params.simulation.sizeMm), 'x', num2str(params.simulation.sizeMm), ' mm ', ... % 写入横向尺寸
-    'alpha=', num2str(params.phase.axiconAngleDeg), ... % 写入 axicon 角度
+    localBuildAxiconDefinitionToken(params), ... % 写入当前 axicon 定义
     ' lc=', num2str(params.phase.vortexCharge), ... % 写入涡旋拓扑荷
     ' gamma=', num2str(params.phase.helicalGamma), ... % 写入 helical 调制度
     ' m=', num2str(params.phase.helicalOrder), ... % 写入 helical 阶数
@@ -959,7 +1082,7 @@ function fileName = localBuildHelicalOffsetSlmPhaseFileName(params, offsetDeg)
 offsetToken = localBuildAngleToken(offsetDeg); % 把 offset 整理成适合文件名的文本，例如 000deg、001deg
 fileName = ['Drill Beam SLM phase helicalOffset ', offsetToken, ' ', ... % 文件名前缀和 helicalPhaseOffset 数值
     num2str(params.simulation.sizeMm), 'x', num2str(params.simulation.sizeMm), ' mm ', ... % 写入横向尺寸
-    'alpha=', num2str(params.phase.axiconAngleDeg), ... % 写入 axicon 角度
+    localBuildAxiconDefinitionToken(params), ... % 写入当前 axicon 定义
     ' lc=', num2str(params.phase.vortexCharge), ... % 写入涡旋拓扑荷
     ' gamma=', num2str(params.phase.helicalGamma), ... % 写入 helical 调制度
     ' m=', num2str(params.phase.helicalOrder), ... % 写入 helical 阶数
@@ -981,7 +1104,7 @@ end
 
 fileName = ['Drill Beam SLM phase rotated ', directionToken, ' ', angleToken, ' ', ... % 文件名前缀和旋转角度
     num2str(params.simulation.sizeMm), 'x', num2str(params.simulation.sizeMm), ' mm ', ... % 写入横向尺寸
-    'alpha=', num2str(params.phase.axiconAngleDeg), ... % 写入 axicon 角度
+    localBuildAxiconDefinitionToken(params), ... % 写入当前 axicon 定义
     ' lc=', num2str(params.phase.vortexCharge), ... % 写入涡旋拓扑荷
     ' gamma=', num2str(params.phase.helicalGamma), ... % 写入 helical 调制度
     ' m=', num2str(params.phase.helicalOrder), ... % 写入 helical 阶数
