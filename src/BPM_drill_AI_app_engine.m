@@ -138,6 +138,11 @@ params.phase = struct( ... % 与相位构造有关的参数
     'curvedMaxShiftMm', 0, ... % 曲线 Bessel 末端期望横向偏移量，单位 mm
     'compensationPhase', 0, ... % 额外补偿相位，目前默认关闭
     'vortexCharge', 0, ... % 涡旋相位的拓扑荷数 l
+    'innerOuterVortexRadiusMm', 1, ... % Radius r for the extra inner/outer vortex split, in mm.
+    'innerOuterVortexTcIn', 0, ... % Inner-region topological charge TC_in.
+    'innerOuterVortexTcOut', 0, ... % Outer-region topological charge TC_out.
+    'innerOuterVortexBetaInDeg', 0, ... % Inner-region holographic axicon beta, in degrees.
+    'innerOuterVortexBetaOutDeg', 0, ... % Outer-region holographic axicon beta, in degrees.
     'helicalGamma', 0, ... % helical 相位的调制度
     'helicalOrder', 1, ... % helical 相位中的角向频率阶数 m
     'helicalPhaseOffset', 0, ... % helical 相位的初始相位偏置，单位度；代入公式前会转换为弧度
@@ -523,6 +528,7 @@ derived.kSample = 2 * pi * params.material.sampleIndex / params.laser.wavelength
 derived.pulseEnergyJ = params.laser.powerW / params.laser.repetitionRateHz; % 单脉冲能量 = 平均功率 / 重复频率
 derived.pulsePeakPowerW = derived.pulseEnergyJ / params.laser.pulseWidthS; % 峰值功率 = 单脉冲能量 / 脉宽
 derived.axicon = localResolveAxiconDefinition(params, derived.kBackground); % 把不同 axicon 输入模式统一解析成 kr 和有效锥角 beta
+derived.innerOuterVortex = localResolveInnerOuterVortexDefinition(params, derived.kBackground);
 
 derived.optics = struct(); % 新建一个 optics 子结构体，用来存和透镜系统有关的派生量
 derived.optics.alphaRad = derived.axicon.physicalBaseAngleRad; % 兼容旧字段名：真实 axicon 底角 alpha
@@ -714,6 +720,47 @@ axicon.physicalBaseAngleRad = physicalBaseAngleRad;
 axicon.physicalBaseAngleDeg = params.phase.axiconAngleDeg;
 end
 
+function innerOuterVortex = localResolveInnerOuterVortexDefinition(params, kBackground)
+radiusMm = params.phase.innerOuterVortexRadiusMm;
+if ~isnumeric(radiusMm) || ~isscalar(radiusMm) || ~isfinite(radiusMm) || radiusMm < 0
+    error('params.phase.innerOuterVortexRadiusMm must be a finite nonnegative scalar number.');
+end
+
+tcIn = params.phase.innerOuterVortexTcIn;
+tcOut = params.phase.innerOuterVortexTcOut;
+if ~isnumeric(tcIn) || ~isscalar(tcIn) || ~isfinite(tcIn) || ...
+        ~isnumeric(tcOut) || ~isscalar(tcOut) || ~isfinite(tcOut)
+    error('params.phase.innerOuterVortexTcIn and TcOut must be finite scalar numbers.');
+end
+
+betaInDeg = params.phase.innerOuterVortexBetaInDeg;
+betaOutDeg = params.phase.innerOuterVortexBetaOutDeg;
+krInRadPerMm = localConeAngleDegToKr(betaInDeg, kBackground, 'params.phase.innerOuterVortexBetaInDeg');
+krOutRadPerMm = localConeAngleDegToKr(betaOutDeg, kBackground, 'params.phase.innerOuterVortexBetaOutDeg');
+
+innerOuterVortex = struct();
+innerOuterVortex.radiusMm = radiusMm;
+innerOuterVortex.tcIn = tcIn;
+innerOuterVortex.tcOut = tcOut;
+innerOuterVortex.betaInDeg = betaInDeg;
+innerOuterVortex.betaOutDeg = betaOutDeg;
+innerOuterVortex.betaInRad = deg2rad(betaInDeg);
+innerOuterVortex.betaOutRad = deg2rad(betaOutDeg);
+innerOuterVortex.krInRadPerMm = krInRadPerMm;
+innerOuterVortex.krOutRadPerMm = krOutRadPerMm;
+end
+
+function krRadPerMm = localConeAngleDegToKr(betaDeg, kBackground, paramName)
+if ~isnumeric(betaDeg) || ~isscalar(betaDeg) || ~isfinite(betaDeg) || abs(betaDeg) >= 90
+    error('%s must be finite and between -90 and 90 degrees.', paramName);
+end
+
+krRadPerMm = kBackground * sin(deg2rad(betaDeg));
+if ~isfinite(krRadPerMm) || abs(krRadPerMm) >= kBackground
+    error('%s resolves to an invalid radial wavevector.', paramName);
+end
+end
+
 function phase = localBuildPhaseMaps(grid, params, derived)
 % localBuildPhaseMaps
 % 作用：计算所有相位分量，包括：
@@ -741,6 +788,15 @@ end
 
 phase.compensation = params.phase.compensationPhase; % 保留额外补偿相位接口
 phase.vortex = params.phase.vortexCharge * grid.theta; % 标准涡旋相位 l*theta
+phase.innerOuterVortexInnerMask = grid.r <= derived.innerOuterVortex.radiusMm;
+phase.innerOuterVortexOuterMask = ~phase.innerOuterVortexInnerMask;
+innerOuterAxiconTerm = grid.sizeMm / 2 - grid.r;
+innerPhase = derived.innerOuterVortex.tcIn * grid.theta + derived.innerOuterVortex.krInRadPerMm * innerOuterAxiconTerm;
+outerPhase = derived.innerOuterVortex.tcOut * grid.theta + derived.innerOuterVortex.krOutRadPerMm * innerOuterAxiconTerm;
+phase.innerOuterVortex = zeros(size(grid.r));
+phase.innerOuterVortex(phase.innerOuterVortexInnerMask) = innerPhase(phase.innerOuterVortexInnerMask);
+phase.innerOuterVortex(phase.innerOuterVortexOuterMask) = outerPhase(phase.innerOuterVortexOuterMask);
+phase.vortexAll = phase.vortex + phase.innerOuterVortex;
 
 phase.rho = grid.r ./ (grid.sizeMm / 2); % 归一化半径 rho，方便定义径向 chirp
 phase.radialChirp = 2 * pi * ( ... % 径向 chirp 相位，形式上是关于 rho 的二次函数
@@ -753,7 +809,7 @@ phase.helical = params.phase.helicalGamma * cos( ... % helical 相位项，本�
     phase.radialChirp + ... % 径向 chirp 决定半径方向的周期变化
     phase.helicalPhaseOffsetRad); % 整体初相位偏移
 
-phase.all = phase.axicon + phase.airy + phase.vortex + phase.helical + phase.compensation + phase.curve; % 最终总相位
+phase.all = phase.axicon + phase.airy + phase.vortexAll + phase.helical + phase.compensation + phase.curve; % 最终总相位
 end
 
 function propagation = localRunBpmPropagationForModes(inputModes, grid, params, derived)
@@ -1025,8 +1081,8 @@ title('phase axicon'); % 图标题
 colorbar; % 显示颜色条
 
 nexttile; % 切到第 6 个子图
-imshow(angle(exp(1i * results.phase.vortex)), []); % 显示 vortex 相位包裹回 [-pi, pi] 之后的样子
-title('phase vortex'); % 图标题
+imshow(angle(exp(1i * results.phase.vortexAll)), []); % 显示 vortex 相位包裹回 [-pi, pi] 之后的样子
+title('phase vortex all'); % 图标题
 colorbar; % 显示颜色条
 
 figure(2); % 新建第二张图窗
@@ -1288,7 +1344,7 @@ if isempty(offsetsDeg) % 如果角度列表为空，通常说明起点、终点�
     error('Helical offset angle list is empty. Check helicalOffsetStartDeg, helicalOffsetEndDeg, and helicalOffsetStepDeg.'); % 主动报错，避免悄悄不导出
 end
 
-basePhaseWithoutHelical = results.phase.axicon + results.phase.airy + results.phase.vortex + results.phase.compensation + results.phase.curve; % 这些相位项不随 helicalPhaseOffset 改变，可提前合并
+basePhaseWithoutHelical = results.phase.axicon + results.phase.airy + results.phase.vortexAll + results.phase.compensation + results.phase.curve; % 这些相位项不随 helicalPhaseOffset 改变，可提前合并
 helicalArgumentWithoutOffset = params.phase.helicalOrder * results.grid.theta - results.phase.radialChirp; % helical 相位中不含 offset 的角向-径向耦合部分
 batchDir = localEnsureHelicalOffsetSlmBatchDirectory(params); % 确保批量输出子文件夹存在
 localProgressWrite(params, sprintf('HELICAL OFFSET SLM BATCH START: total_images=%d, output_dir=%s', numel(offsetsDeg), batchDir), false); % 记录批量导出开始
@@ -1421,6 +1477,14 @@ switch mode
 end
 end
 
+function token = localBuildInnerOuterVortexToken(params)
+token = ['iov=r', num2str(params.phase.innerOuterVortexRadiusMm), ...
+    '_tci', num2str(params.phase.innerOuterVortexTcIn), ...
+    '_tco', num2str(params.phase.innerOuterVortexTcOut), ...
+    '_bi', num2str(params.phase.innerOuterVortexBetaInDeg), ...
+    '_bo', num2str(params.phase.innerOuterVortexBetaOutDeg)];
+end
+
 function token = localBuildBeamQualityToken(params)
 model = char(string(params.beam.beamQualityModel));
 token = ['beamM2=', num2str(params.beam.beamQualityM2), ' model=', model];
@@ -1439,6 +1503,7 @@ fileName = ['Drill Beam 3D ', ... % 文件名前缀，标明这是 3D 强度
     num2str(params.simulation.sizeMm), 'x', num2str(params.simulation.sizeMm), 'x', num2str(params.simulation.zRangeMm), ' mm ', ... % 写入横向尺寸和 z 传播范围
     localBuildAxiconDefinitionToken(params), ... % 写入当前 axicon 定义
     ' lc=', num2str(params.phase.vortexCharge), ... % 写入涡旋拓扑荷
+    ' ', localBuildInnerOuterVortexToken(params), ...
     ' gamma=', num2str(params.phase.helicalGamma), ... % 写入 helical 调制度
     ' m=', num2str(params.phase.helicalOrder), ... % 写入 helical 阶数
     ' helicalOffset=', localBuildAngleToken(params.phase.helicalPhaseOffset), ... % 写入 helical 相位偏置，避免不同 offset 的 3D 文件互相覆盖
@@ -1456,6 +1521,7 @@ fileName = ['Drill Beam SLM phase ', ... % 文件名前缀，标明这是总 SLM
     num2str(params.simulation.sizeMm), 'x', num2str(params.simulation.sizeMm), ' mm ', ... % 写入横向尺寸
     localBuildAxiconDefinitionToken(params), ... % 写入当前 axicon 定义
     ' lc=', num2str(params.phase.vortexCharge), ... % 写入涡旋拓扑荷
+    ' ', localBuildInnerOuterVortexToken(params), ...
     ' gamma=', num2str(params.phase.helicalGamma), ... % 写入 helical 调制度
     ' m=', num2str(params.phase.helicalOrder), ... % 写入 helical 阶数
     ' omega=', num2str(params.phase.omegaInner), ... % 写入 omega 参数
@@ -1471,6 +1537,7 @@ fileName = ['Drill Beam Helical phase ', ... % 文件名前缀，标明这是 he
     num2str(params.simulation.sizeMm), 'x', num2str(params.simulation.sizeMm), ' mm ', ... % 写入横向尺寸
     localBuildAxiconDefinitionToken(params), ... % 写入当前 axicon 定义
     ' lc=', num2str(params.phase.vortexCharge), ... % 写入涡旋拓扑荷
+    ' ', localBuildInnerOuterVortexToken(params), ...
     ' gamma=', num2str(params.phase.helicalGamma), ... % 写入 helical 调制度
     ' m=', num2str(params.phase.helicalOrder), ... % 写入 helical 阶数
     ' omega=', num2str(params.phase.omegaInner), ... % 写入 omega 参数
@@ -1487,6 +1554,7 @@ fileName = ['Drill Beam SLM phase helicalOffset ', offsetToken, ' ', ... % 文�
     num2str(params.simulation.sizeMm), 'x', num2str(params.simulation.sizeMm), ' mm ', ... % 写入横向尺寸
     localBuildAxiconDefinitionToken(params), ... % 写入当前 axicon 定义
     ' lc=', num2str(params.phase.vortexCharge), ... % 写入涡旋拓扑荷
+    ' ', localBuildInnerOuterVortexToken(params), ...
     ' gamma=', num2str(params.phase.helicalGamma), ... % 写入 helical 调制度
     ' m=', num2str(params.phase.helicalOrder), ... % 写入 helical 阶数
     ' omega=', num2str(params.phase.omegaInner), ... % 写入 omega 参数
@@ -1509,6 +1577,7 @@ fileName = ['Drill Beam SLM phase rotated ', directionToken, ' ', angleToken, ' 
     num2str(params.simulation.sizeMm), 'x', num2str(params.simulation.sizeMm), ' mm ', ... % 写入横向尺寸
     localBuildAxiconDefinitionToken(params), ... % 写入当前 axicon 定义
     ' lc=', num2str(params.phase.vortexCharge), ... % 写入涡旋拓扑荷
+    ' ', localBuildInnerOuterVortexToken(params), ...
     ' gamma=', num2str(params.phase.helicalGamma), ... % 写入 helical 调制度
     ' m=', num2str(params.phase.helicalOrder), ... % 写入 helical 阶数
     ' omega=', num2str(params.phase.omegaInner), ... % 写入 omega 参数

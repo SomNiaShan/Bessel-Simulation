@@ -95,6 +95,11 @@ classdef BPM_drill_AI_app < matlab.apps.AppBase
                 'curvedMaxShiftMm', 'curvedMaxShiftMm (mm)';
                 'compensationPhase', 'compensationPhase';
                 'vortexCharge', 'vortexCharge';
+                'innerOuterVortexRadiusMm', 'inner/outer r (mm)';
+                'innerOuterVortexTcIn', 'TC_in';
+                'innerOuterVortexTcOut', 'TC_out';
+                'innerOuterVortexBetaInDeg', 'Axicon beta_in (deg)';
+                'innerOuterVortexBetaOutDeg', 'Axicon beta_out (deg)';
                 'helicalGamma', 'helicalGamma';
                 'helicalOrder', 'helicalOrder';
                 'helicalPhaseOffset', 'helicalPhaseOffset (deg)';
@@ -587,6 +592,13 @@ classdef BPM_drill_AI_app < matlab.apps.AppBase
                         error('Axicon refractive index must be positive.');
                     end
             end
+            if params.phase.innerOuterVortexRadiusMm < 0
+                error('params.phase.innerOuterVortexRadiusMm must be nonnegative.');
+            end
+            if abs(params.phase.innerOuterVortexBetaInDeg) >= 90 || ...
+                    abs(params.phase.innerOuterVortexBetaOutDeg) >= 90
+                error('Inner/outer vortex beta values must be between -90 and 90 degrees.');
+            end
             if params.optics.lens1FocalLengthMm <= 0 || params.optics.lens2FocalLengthMm <= 0
                 error('Lens focal lengths must be positive.');
             end
@@ -639,7 +651,7 @@ classdef BPM_drill_AI_app < matlab.apps.AppBase
             app.showImage(app.ResultAxes.angularSpectrum, app.resultAngularSpectrumIntensity(results), 'Angular spectrum |F|^2');
             app.showImage(app.ResultAxes.helicalPhase, results.phase.helical, 'Helical phase');
             app.showImage(app.ResultAxes.axiconPhase, angle(exp(1i * results.phase.axicon)), 'Axicon phase');
-            app.showImage(app.ResultAxes.vortexPhase, angle(exp(1i * results.phase.vortex)), 'Vortex phase');
+            app.showImage(app.ResultAxes.vortexPhase, angle(exp(1i * results.phase.vortexAll)), 'Vortex phase (all)');
 
             app.showCrossSection(app.ResultAxes.peakLog, ...
                 results.postprocess.zImageMm, ...
@@ -787,6 +799,15 @@ classdef BPM_drill_AI_app < matlab.apps.AppBase
                     results.derived.axicon.radialPeriodMm, results.derived.axicon.radialPeriodPx);
                 sprintf('Physical-equivalent fields: n=%.12g, alpha=%.12g deg', ...
                     results.derived.axicon.physicalIndex, results.derived.axicon.physicalBaseAngleDeg);
+                sprintf('Inner/outer vortex: r=%.12g mm, TC_in=%.12g, TC_out=%.12g', ...
+                    results.derived.innerOuterVortex.radiusMm, ...
+                    results.derived.innerOuterVortex.tcIn, ...
+                    results.derived.innerOuterVortex.tcOut);
+                sprintf('Inner/outer axicon beta: in=%.12g deg (kr=%.12g), out=%.12g deg (kr=%.12g)', ...
+                    results.derived.innerOuterVortex.betaInDeg, ...
+                    results.derived.innerOuterVortex.krInRadPerMm, ...
+                    results.derived.innerOuterVortex.betaOutDeg, ...
+                    results.derived.innerOuterVortex.krOutRadPerMm);
                 sprintf('Z slices: %d', numel(results.propagation.zValuesMm));
                 sprintf('Pulse peak power: %.12g W', results.derived.pulsePeakPowerW);
                 sprintf('Laser beam M2: %.12g, model: %s (%s)', ...
@@ -1365,6 +1386,16 @@ classdef BPM_drill_AI_app < matlab.apps.AppBase
                     description = 'Extra compensation phase hook. It is currently applied as an additional global phase term.';
                 case 'phase.vortexCharge'
                     description = 'Topological charge l for the vortex phase. Set to 0 to disable the vortex phase.';
+                case 'phase.innerOuterVortexRadiusMm'
+                    description = 'Radius r, in mm, that splits the extra inner/outer vortex phase. Pixels with radius <= r use the inner values.';
+                case 'phase.innerOuterVortexTcIn'
+                    description = 'Topological charge TC_in applied inside radius r for the extra inner/outer vortex phase. Set to 0 to disable the inner vortex term.';
+                case 'phase.innerOuterVortexTcOut'
+                    description = 'Topological charge TC_out applied outside radius r for the extra inner/outer vortex phase. Set to 0 to disable the outer vortex term.';
+                case 'phase.innerOuterVortexBetaInDeg'
+                    description = 'Signed holographic axicon cone angle beta_in, in degrees, applied inside radius r. Set to 0 to disable the inner axicon term.';
+                case 'phase.innerOuterVortexBetaOutDeg'
+                    description = 'Signed holographic axicon cone angle beta_out, in degrees, applied outside radius r. Set to 0 to disable the outer axicon term.';
                 case 'phase.helicalGamma'
                     description = 'Modulation depth of the helical phase term. This controls the strength of the helical contribution.';
                 case 'phase.helicalOrder'

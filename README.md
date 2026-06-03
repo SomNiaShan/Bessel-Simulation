@@ -31,6 +31,16 @@ The Phase tab now uses `axiconMode` to choose one active axicon definition:
 Internally, all modes are converted to one radial phase slope `k_r` and one effective cone angle before propagation.
 Inactive axicon fields are read-only equivalents and update in the app when the active definition changes.
 
+## Inner/Outer Vortex Phase
+
+The Phase tab also includes an extra inner/outer vortex term:
+
+- `innerOuterVortexRadiusMm`: split radius `r`, in mm.
+- `innerOuterVortexTcIn` / `innerOuterVortexTcOut`: topological charges inside and outside `r`.
+- `innerOuterVortexBetaInDeg` / `innerOuterVortexBetaOutDeg`: holographic axicon beta values inside and outside `r`.
+
+All TC and beta defaults are `0`, so this extra term is disabled by default.
+
 ## Install from Toolbox Package
 
 Use the installer:

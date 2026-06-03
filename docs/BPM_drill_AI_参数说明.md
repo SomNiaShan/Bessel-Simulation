@@ -15,7 +15,7 @@
 最常改的通常是这几类：
 
 1. `params.phase`
-   这里决定输出光束长什么样，尤其是 `axiconMode` 及其当前主参数、`vortexCharge`、`helicalGamma`、`helicalOrder`、`omegaInner`、`omegaOuter`。
+   这里决定输出光束长什么样，尤其是 `axiconMode` 及其当前主参数、`vortexCharge`、内外圈 vortex 参数、`helicalGamma`、`helicalOrder`、`omegaInner`、`omegaOuter`。
 2. `params.simulation`
    这里决定仿真精度和计算量，尤其是 `N`、`zRangeMm`、`dzMm`。
 3. `params.output`
@@ -275,6 +275,32 @@ run('C:/Users/Shan/Desktop/academic/drill-beam-matlab/src/BPM_drill_AI.m');
   涡旋特征减弱；设为 `0` 表示没有 vortex 相位。
 - 直接影响：
   输出的中空程度、螺旋结构特征。
+
+#### `innerOuterVortexRadiusMm`
+
+- 含义：额外“内外圈 vortex”相位的分界半径 `r`，单位 mm。
+- 生效方式：
+  半径 `grid.r <= r` 的像素使用内圈参数，半径 `grid.r > r` 的像素使用外圈参数。
+- 默认值：
+  为 `1` mm。由于默认 `TC_in`、`TC_out`、`beta_in`、`beta_out` 都是 `0`，这个额外相位默认不改变总相位。
+
+#### `innerOuterVortexTcIn` / `innerOuterVortexTcOut`
+
+- 含义：内圈和外圈的额外 vortex 拓扑荷数，分别对应 `TC_in` 和 `TC_out`。
+- 生效公式：
+  内圈叠加 `TC_in * theta`，外圈叠加 `TC_out * theta`。
+- 默认值：
+  都是 `0`，表示不添加这个额外 vortex 项。
+
+#### `innerOuterVortexBetaInDeg` / `innerOuterVortexBetaOutDeg`
+
+- 含义：内圈和外圈的额外全息 axicon 有效锥角，分别对应 `beta_in` 和 `beta_out`，单位度。
+- 生效公式：
+  程序会把 `beta_in/out` 转成径向波矢 `k_r = k * sin(beta)`，再分别叠加到内圈和外圈。
+- 默认值：
+  都是 `0`，表示不添加这个额外 axicon 项。
+- 注意：
+  这是一项额外相位，会和全局 `axiconMode` 解析出来的 axicon 相位、全局 `vortexCharge` 相位一起叠加。
 
 #### `helicalGamma`
 
@@ -563,6 +589,9 @@ run('C:/Users/Shan/Desktop/academic/drill-beam-matlab/src/BPM_drill_AI.m');
 - `helicalOrder`
 - `omegaInner`
 - `omegaOuter`
+- `innerOuterVortexRadiusMm`
+- `innerOuterVortexTcIn` / `innerOuterVortexTcOut`
+- `innerOuterVortexBetaInDeg` / `innerOuterVortexBetaOutDeg`
 - `axiconMode`
 - `axiconConeAngleDeg` / `axiconRadialPeriodMm` / `axiconRadialPeriodPx`
 
