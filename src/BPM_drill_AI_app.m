@@ -18,6 +18,7 @@ classdef BPM_drill_AI_app < matlab.apps.AppBase
         StatusTextArea
         LogTextArea
         SummaryTextArea
+        BeamModelExplanationTextArea
         IsRunning = false
         IsSyncingAxiconControls = false
     end
@@ -215,16 +216,25 @@ classdef BPM_drill_AI_app < matlab.apps.AppBase
 
         function addParameterTab(app, parent, groupName, titleText, specs)
             tab = uitab(parent, 'Title', titleText);
-            tabGrid = uigridlayout(tab, [1 1]);
+            isBeamTab = strcmp(groupName, 'beam');
+            rowCount = size(specs, 1);
+            if isBeamTab
+                tabGrid = uigridlayout(tab, [2 1]);
+                tabGrid.RowHeight = {rowCount * 35 + 8, '1x'};
+                tabGrid.RowSpacing = 8;
+            else
+                tabGrid = uigridlayout(tab, [1 1]);
+            end
             tabGrid.Padding = [6 6 6 6];
 
             panel = uipanel(tabGrid, 'BorderType', 'none');
+            panel.Layout.Row = 1;
+            panel.Layout.Column = 1;
             try
                 panel.Scrollable = 'on';
             catch
             end
 
-            rowCount = size(specs, 1);
             grid = uigridlayout(panel, [rowCount 3]);
             grid.RowHeight = repmat({30}, 1, rowCount);
             grid.ColumnWidth = {190, 20, '1x'};
@@ -278,11 +288,23 @@ classdef BPM_drill_AI_app < matlab.apps.AppBase
                 if app.isAxiconSyncControl(groupName, fieldName) && ...
                         ~(strcmp(groupName, 'phase') && strcmp(fieldName, 'axiconMode'))
                     control.ValueChangedFcn = @(~, ~)app.axiconParameterChanged();
+                elseif app.isBeamExplanationControl(groupName, fieldName) && ...
+                        ~(strcmp(groupName, 'beam') && strcmp(fieldName, 'beamQualityModel'))
+                    control.ValueChangedFcn = @(~, ~)app.beamQualityParameterChanged();
                 end
                 control.Layout.Row = index;
                 control.Layout.Column = 3;
 
                 app.Controls.(app.controlKey(groupName, fieldName)) = control;
+            end
+
+            if isBeamTab
+                app.BeamModelExplanationTextArea = uitextarea(tabGrid, ...
+                    'Editable', 'off', ...
+                    'Value', {'Select an M^2 model to see how it is simulated.'});
+                app.BeamModelExplanationTextArea.Layout.Row = 2;
+                app.BeamModelExplanationTextArea.Layout.Column = 1;
+                app.BeamModelExplanationTextArea.FontSize = 12;
             end
         end
 
@@ -296,35 +318,25 @@ classdef BPM_drill_AI_app < matlab.apps.AppBase
             try
                 app.Results = [];
                 params = app.collectParams();
-                displayOutputDir = params.output.outputDir;
-                assignResultsToBaseWorkspace = app.shouldAssignResultsToBaseWorkspace(params);
-                params.output.writeProgressLog = false;
-                params.output.progressLogFile = '';
+                interactiveOutputParams = params.output;
+                runParams = app.suppressRunOutput(params);
                 app.LogTextArea.Value = {'Run started. Waiting for progress messages...'};
-                params.runtimeProgressCallback = @(message)app.appendLog(message);
+                runParams.runtimeProgressCallback = @(message)app.appendLog(message);
                 app.appendStatus(sprintf('Run started: %s', char(datetime('now', 'Format', 'yyyy-MM-dd HH:mm:ss'))));
-                app.appendStatus(app.simulationEstimateMessage(params));
+                app.appendStatus(app.simulationEstimateMessage(runParams));
                 drawnow;
 
-                results = BPM_drill_AI_app_engine('run', params);
+                results = BPM_drill_AI_app_engine('run', runParams);
                 if isfield(results.params, 'runtimeProgressCallback')
                     results.params = rmfield(results.params, 'runtimeProgressCallback');
                 end
                 app.Params = results.params;
-                app.Params.output.outputDir = displayOutputDir;
+                app.Params.output = interactiveOutputParams;
                 app.populateControls(app.Params);
                 app.appendStatus('Updating result preview...');
                 app.updateResultPreview(results);
                 app.updateSummary(results);
                 app.Results = results;
-
-                if assignResultsToBaseWorkspace
-                    app.appendStatus('Exporting full results to base workspace...');
-                    drawnow;
-                    assignin('base', 'BPM_drill_AI_app_results', results);
-                    assignin('base', 'BPM_drill_AI_app_params', app.Params);
-                    app.appendStatus('Workspace export finished.');
-                end
                 app.appendStatus(sprintf('Run finished in %.2f s.', toc(runStarted)));
             catch ME
                 app.appendStatus(sprintf('ERROR: %s', ME.message));
@@ -472,6 +484,30 @@ classdef BPM_drill_AI_app < matlab.apps.AppBase
             end
         end
 
+        function params = suppressRunOutput(~, params)
+            outputActionFields = {
+                'write3DIntensity';
+                'writeAllPhase';
+                'writeHelicalPhase';
+                'writeHelicalOffsetSlmBatch';
+                'writeRotatedSlmBatch';
+                'plotFigures';
+                'printProgress';
+                'writeProgressLog';
+                'assignResultsToBaseWorkspace'};
+
+            for fieldIndex = 1:numel(outputActionFields)
+                fieldName = outputActionFields{fieldIndex};
+                if isfield(params.output, fieldName)
+                    params.output.(fieldName) = false;
+                end
+            end
+
+            if isfield(params.output, 'progressLogFile')
+                params.output.progressLogFile = '';
+            end
+        end
+
         function hasAction = hasSelectedOutputAction(~, outputParams)
             hasAction = outputParams.write3DIntensity || ...
                 outputParams.writeAllPhase || ...
@@ -592,6 +628,7 @@ classdef BPM_drill_AI_app < matlab.apps.AppBase
                 end
             end
             app.updateBeamQualityControlStates();
+            app.updateBeamQualityDescription();
             app.updateAxiconControlStates();
             app.syncAxiconEquivalentControls();
         end
@@ -923,10 +960,15 @@ classdef BPM_drill_AI_app < matlab.apps.AppBase
 
         function beamQualityModelChanged(app)
             app.updateBeamQualityControlStates();
+            app.updateBeamQualityDescription();
             modelControlKey = app.controlKey('beam', 'beamQualityModel');
             if isfield(app.Controls, modelControlKey)
                 app.appendStatus(sprintf('M2 model: %s', char(string(app.Controls.(modelControlKey).Value))));
             end
+        end
+
+        function beamQualityParameterChanged(app)
+            app.updateBeamQualityDescription();
         end
 
         function updateBeamQualityControlStates(app)
@@ -947,6 +989,117 @@ classdef BPM_drill_AI_app < matlab.apps.AppBase
             end
             if isfield(app.Controls, phaseYKey)
                 app.Controls.(phaseYKey).Enable = phaseEnable;
+            end
+        end
+
+        function updateBeamQualityDescription(app)
+            if isempty(app.BeamModelExplanationTextArea) || ~isvalid(app.BeamModelExplanationTextArea)
+                return;
+            end
+
+            model = char(string(app.Params.beam.beamQualityModel));
+            beamQualityM2 = app.Params.beam.beamQualityM2;
+            phaseXDeg = app.Params.beam.hgCoherentPhaseXDeg;
+            phaseYDeg = app.Params.beam.hgCoherentPhaseYDeg;
+
+            modelKey = app.controlKey('beam', 'beamQualityModel');
+            m2Key = app.controlKey('beam', 'beamQualityM2');
+            phaseXKey = app.controlKey('beam', 'hgCoherentPhaseXDeg');
+            phaseYKey = app.controlKey('beam', 'hgCoherentPhaseYDeg');
+            if isfield(app.Controls, modelKey)
+                model = char(string(app.Controls.(modelKey).Value));
+            end
+            if isfield(app.Controls, m2Key)
+                beamQualityM2 = app.Controls.(m2Key).Value;
+            end
+            if isfield(app.Controls, phaseXKey)
+                phaseXDeg = app.Controls.(phaseXKey).Value;
+            end
+            if isfield(app.Controls, phaseYKey)
+                phaseYDeg = app.Controls.(phaseYKey).Value;
+            end
+
+            app.BeamModelExplanationTextArea.Value = ...
+                app.beamQualityModelExplanation(model, beamQualityM2, phaseXDeg, phaseYDeg);
+        end
+
+        function lines = beamQualityModelExplanation(app, model, beamQualityM2, phaseXDeg, phaseYDeg)
+            if ~isnumeric(beamQualityM2) || ~isscalar(beamQualityM2) || ~isfinite(beamQualityM2) || beamQualityM2 < 1
+                lines = {
+                    'M^2 model';
+                    'Set beamQualityM2 to a finite value greater than or equal to 1 to see the mode interpretation.'};
+                return;
+            end
+
+            modeText = app.beamQualityModeWeightText(beamQualityM2);
+            switch char(string(model))
+                case 'effectiveGaussian'
+                    effectiveWaistText = 'not available';
+                    waistKey = app.controlKey('beam', 'waistRadiusMm');
+                    if isfield(app.Controls, waistKey)
+                        waistRadiusMm = app.Controls.(waistKey).Value;
+                        if isnumeric(waistRadiusMm) && isscalar(waistRadiusMm) && isfinite(waistRadiusMm)
+                            effectiveWaistText = sprintf('%.6g mm', waistRadiusMm / beamQualityM2);
+                        end
+                    end
+                    lines = {
+                        'effectiveGaussian';
+                        sprintf('Current M^2: %.6g. The app propagates one smooth HG00 Gaussian field.', beamQualityM2);
+                        sprintf('It uses waistRadiusMm / M^2 as the effective waist, currently %s, so the angular spread is increased without adding higher-order lobes.', effectiveWaistText);
+                        'Use this for a fast, stable approximation when you only need the overall divergence or spot-size effect of a non-ideal beam.';
+                        'It does not model modal interference, asymmetric HG structure, or separate modal power.'};
+                case 'coherentHG'
+                    lines = {
+                        'coherentHG';
+                        sprintf('Current M^2: %.6g. The app builds a weighted Hermite-Gaussian mode set from M^2 - 1: %s.', beamQualityM2, modeText);
+                        'The selected HG modes are added as complex fields before propagation, using sqrt(weight) for field amplitude.';
+                        sprintf('HGn0 terms use HG x phase = %.6g deg, and HG0n terms use HG y phase = %.6g deg. These phases can create interference and asymmetric structure.', phaseXDeg, phaseYDeg);
+                        'Use this when the higher-order content has a stable phase relationship to the fundamental mode.'};
+                case 'incoherentHG'
+                    lines = {
+                        'incoherentHG';
+                        sprintf('Current M^2: %.6g. The app builds this weighted Hermite-Gaussian mode set from M^2 - 1: %s.', beamQualityM2, modeText);
+                        'Each HG mode is propagated separately, then the final intensities are summed with the listed weights.';
+                        'There is no interference between modes, so HG x phase and HG y phase are ignored in this mode.';
+                        'Use this for multimode beams where modal phases are unknown, drifting, or mutually incoherent. It is more conservative, but can run slower because multiple fields are propagated.'};
+                otherwise
+                    lines = {
+                        'M^2 model';
+                        'Select effectiveGaussian, coherentHG, or incoherentHG.'};
+            end
+        end
+
+        function text = beamQualityModeWeightText(app, beamQualityM2)
+            excessOrder = max(0, beamQualityM2 - 1);
+            lowOrder = floor(excessOrder);
+            highOrder = ceil(excessOrder);
+            highWeight = excessOrder - lowOrder;
+            if highWeight < 1e-12
+                highWeight = 0;
+                highOrder = lowOrder;
+            elseif 1 - highWeight < 1e-12
+                highWeight = 0;
+                lowOrder = highOrder;
+            end
+            lowWeight = 1 - highWeight;
+
+            parts = {};
+            parts = app.appendBeamQualityModeWeightParts(parts, lowOrder, lowWeight);
+            if highOrder ~= lowOrder && highWeight > 0
+                parts = app.appendBeamQualityModeWeightParts(parts, highOrder, highWeight);
+            end
+            text = strjoin(parts, ', ');
+        end
+
+        function parts = appendBeamQualityModeWeightParts(~, parts, order, groupWeight)
+            if groupWeight <= 0
+                return;
+            end
+            if order == 0
+                parts{end + 1} = sprintf('HG00=%.6g', groupWeight);
+            else
+                parts{end + 1} = sprintf('HG%d0=%.6g', order, groupWeight / 2);
+                parts{end + 1} = sprintf('HG0%d=%.6g', order, groupWeight / 2);
             end
         end
 
@@ -1129,6 +1282,16 @@ classdef BPM_drill_AI_app < matlab.apps.AppBase
                 'phase.axiconIndex';
                 'phase.axiconAngleDeg'};
             isMatch = any(strcmp(paramPath, syncPaths));
+        end
+
+        function isMatch = isBeamExplanationControl(~, groupName, fieldName)
+            paramPath = sprintf('%s.%s', groupName, fieldName);
+            explanationPaths = {
+                'beam.waistRadiusMm';
+                'beam.beamQualityM2';
+                'beam.hgCoherentPhaseXDeg';
+                'beam.hgCoherentPhaseYDeg'};
+            isMatch = any(strcmp(paramPath, explanationPaths));
         end
 
         function key = controlKey(~, groupName, fieldName)

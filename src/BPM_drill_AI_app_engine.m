@@ -59,19 +59,12 @@ switch action
 end
 
 runTimer = tic;
-params = localPrepareParams(params);
-results = localRunSimulation(params);
-results.params = params;
-
-if localShouldAssignResultsToBaseWorkspace(params)
-    localAssignResultsToBaseWorkspace(results, params);
-end
-
-if params.output.plotFigures
-    localPlotResults(results, params);
-end
-
-localExportResults(results, params);
+requestedParams = params;
+runParams = localSuppressRunOutput(params);
+runParams = localPrepareParams(runParams, false);
+results = localRunSimulation(runParams);
+results.params = runParams;
+results.params.output = requestedParams.output;
 results.elapsedSeconds = toc(runTimer);
 
 if nargout > 0
@@ -79,14 +72,22 @@ if nargout > 0
 end
 end
 
-function params = localPrepareParams(params)
-if strlength(string(params.output.outputDir)) == 0
-    params.output.outputDir = localEnsureOutputDirectory();
+function params = localPrepareParams(params, shouldEnsureOutputDirectory)
+if nargin < 2
+    shouldEnsureOutputDirectory = true;
+end
+
+if shouldEnsureOutputDirectory
+    if strlength(string(params.output.outputDir)) == 0
+        params.output.outputDir = localEnsureOutputDirectory();
+    else
+        params.output.outputDir = char(string(params.output.outputDir));
+        if exist(params.output.outputDir, 'dir') ~= 7
+            mkdir(params.output.outputDir);
+        end
+    end
 else
     params.output.outputDir = char(string(params.output.outputDir));
-    if exist(params.output.outputDir, 'dir') ~= 7
-        mkdir(params.output.outputDir);
-    end
 end
 
 if params.output.writeProgressLog
@@ -182,6 +183,30 @@ params.output = struct( ... % 与绘图和导出有关的参数
     'progressLogFile', '', ... % 进度日志文件路径；留空时程序自动放到 outputs/BPM_drill_AI_progress.log
     'outputDir', ''); % 输出目录；稍后由程序自动填入
 params.output.assignResultsToBaseWorkspace = false;
+end
+
+function params = localSuppressRunOutput(params)
+outputActionFields = {
+    'write3DIntensity';
+    'writeAllPhase';
+    'writeHelicalPhase';
+    'writeHelicalOffsetSlmBatch';
+    'writeRotatedSlmBatch';
+    'plotFigures';
+    'printProgress';
+    'writeProgressLog';
+    'assignResultsToBaseWorkspace'};
+
+for fieldIndex = 1:numel(outputActionFields)
+    fieldName = outputActionFields{fieldIndex};
+    if isfield(params.output, fieldName)
+        params.output.(fieldName) = false;
+    end
+end
+
+if isfield(params.output, 'progressLogFile')
+    params.output.progressLogFile = '';
+end
 end
 
 function shouldAssign = localShouldAssignResultsToBaseWorkspace(params)
