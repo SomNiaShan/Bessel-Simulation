@@ -12,6 +12,7 @@ classdef BPM_drill_AI_app < matlab.apps.AppBase
         RunButtonIdleText
         RunButtonIdleBackgroundColor
         RunButtonIdleFontColor
+        OutputButton
         ResetButton
         OutputDirButton
         StatusTextArea
@@ -75,7 +76,11 @@ classdef BPM_drill_AI_app < matlab.apps.AppBase
 
             app.addParameterTab(parameterTabs, 'beam', 'Beam', {
                 'waistRadiusMm', 'waistRadiusMm (mm)';
-                'fieldAmplitude', 'fieldAmplitude'});
+                'fieldAmplitude', 'fieldAmplitude';
+                'beamQualityM2', 'beamQualityM2';
+                'beamQualityModel', 'M2 model';
+                'hgCoherentPhaseXDeg', 'HG x phase (deg)';
+                'hgCoherentPhaseYDeg', 'HG y phase (deg)'});
 
             app.addParameterTab(parameterTabs, 'phase', 'Phase', {
                 'airyStrength', 'airyStrength';
@@ -129,12 +134,13 @@ classdef BPM_drill_AI_app < matlab.apps.AppBase
                 'cropHalfWidthPixels', 'cropHalfWidthPixels';
                 'referenceSliceIndex', 'referenceSliceIndex';
                 'printProgress', 'printProgress';
+                'assignResultsToBaseWorkspace', 'Assign results to base';
                 'progressIntervalSeconds', 'progressIntervalSeconds (s)';
                 'outputDir', 'outputDir'});
 
-            buttonGrid = uigridlayout(leftGrid, [1 3]);
+            buttonGrid = uigridlayout(leftGrid, [1 4]);
             buttonGrid.RowHeight = {32};
-            buttonGrid.ColumnWidth = {'1x', '1x', '1x'};
+            buttonGrid.ColumnWidth = {'1x', '1x', '1x', '1x'};
             buttonGrid.Padding = [0 0 0 0];
             buttonGrid.ColumnSpacing = 6;
 
@@ -144,6 +150,9 @@ classdef BPM_drill_AI_app < matlab.apps.AppBase
             app.RunButtonIdleText = app.RunButton.Text;
             app.RunButtonIdleBackgroundColor = app.RunButton.BackgroundColor;
             app.RunButtonIdleFontColor = app.RunButton.FontColor;
+            app.OutputButton = uibutton(buttonGrid, 'push', ...
+                'Text', 'Output', ...
+                'ButtonPushedFcn', @(~, ~)app.outputButtonPushed());
             app.ResetButton = uibutton(buttonGrid, 'push', ...
                 'Text', 'Defaults', ...
                 'ButtonPushedFcn', @(~, ~)app.resetButtonPushed());
@@ -252,6 +261,12 @@ classdef BPM_drill_AI_app < matlab.apps.AppBase
                         'Value', char(string(displayValue)), ...
                         'Tooltip', tooltip, ...
                         'ValueChangedFcn', @(~, ~)app.axiconModeChanged());
+                elseif strcmp(groupName, 'beam') && strcmp(fieldName, 'beamQualityModel')
+                    control = uidropdown(grid, ...
+                        'Items', app.beamQualityModelOptions(), ...
+                        'Value', char(string(displayValue)), ...
+                        'Tooltip', tooltip, ...
+                        'ValueChangedFcn', @(~, ~)app.beamQualityModelChanged());
                 elseif islogical(value)
                     control = uicheckbox(grid, 'Text', '', 'Value', logical(displayValue), 'Tooltip', tooltip);
                 elseif ischar(value) || isstring(value)
@@ -276,42 +291,100 @@ classdef BPM_drill_AI_app < matlab.apps.AppBase
                 return;
             end
             app.setRunningState(true);
+            runningStateCleanup = onCleanup(@()app.setRunningState(false));
             runStarted = tic;
             try
+                app.Results = [];
                 params = app.collectParams();
                 displayOutputDir = params.output.outputDir;
+                assignResultsToBaseWorkspace = app.shouldAssignResultsToBaseWorkspace(params);
                 params.output.writeProgressLog = false;
                 params.output.progressLogFile = '';
                 app.LogTextArea.Value = {'Run started. Waiting for progress messages...'};
                 params.runtimeProgressCallback = @(message)app.appendLog(message);
                 app.appendStatus(sprintf('Run started: %s', char(datetime('now', 'Format', 'yyyy-MM-dd HH:mm:ss'))));
+                app.appendStatus(app.simulationEstimateMessage(params));
                 drawnow;
 
                 results = BPM_drill_AI_app_engine('run', params);
                 if isfield(results.params, 'runtimeProgressCallback')
                     results.params = rmfield(results.params, 'runtimeProgressCallback');
                 end
-                app.Results = results;
                 app.Params = results.params;
                 app.Params.output.outputDir = displayOutputDir;
                 app.populateControls(app.Params);
+                app.appendStatus('Updating result preview...');
                 app.updateResultPreview(results);
                 app.updateSummary(results);
+                app.Results = results;
 
-                assignin('base', 'BPM_drill_AI_app_results', results);
-                assignin('base', 'BPM_drill_AI_app_params', app.Params);
+                if assignResultsToBaseWorkspace
+                    app.appendStatus('Exporting full results to base workspace...');
+                    drawnow;
+                    assignin('base', 'BPM_drill_AI_app_results', results);
+                    assignin('base', 'BPM_drill_AI_app_params', app.Params);
+                    app.appendStatus('Workspace export finished.');
+                end
                 app.appendStatus(sprintf('Run finished in %.2f s.', toc(runStarted)));
             catch ME
                 app.appendStatus(sprintf('ERROR: %s', ME.message));
-                uialert(app.UIFigure, getReport(ME, 'extended', 'hyperlinks', 'off'), 'BPM Drill AI App');
+                if ~isempty(app.UIFigure) && isvalid(app.UIFigure)
+                    uialert(app.UIFigure, getReport(ME, 'extended', 'hyperlinks', 'off'), 'BPM Drill AI App');
+                end
             end
-            app.setRunningState(false);
+            clear runningStateCleanup;
         end
 
         function resetButtonPushed(app)
+            app.Results = [];
             app.Params = BPM_drill_AI_app_engine('defaults');
             app.populateControls(app.Params);
             app.appendStatus('Parameters reset to defaults.');
+        end
+
+        function outputButtonPushed(app)
+            if app.IsRunning
+                return;
+            end
+            if isempty(app.Results) || ~isstruct(app.Results)
+                app.appendStatus('ERROR: Run once before using Output.');
+                uialert(app.UIFigure, 'Run the simulation once before exporting output files.', 'BPM Drill AI App');
+                return;
+            end
+
+            app.setRunningState(true, 'Outputting...');
+            runningStateCleanup = onCleanup(@()app.setRunningState(false));
+            exportStarted = tic;
+            try
+                results = app.Results;
+                exportParams = results.params;
+                exportParams.output = app.collectOutputParams(exportParams.output);
+                if ~app.hasSelectedOutputAction(exportParams.output)
+                    error('No output option is selected. Enable at least one write* output option in the Output tab.');
+                end
+
+                exportParams.output.writeProgressLog = false;
+                exportParams.output.progressLogFile = '';
+                exportParams.runtimeProgressCallback = @(message)app.appendLog(message);
+                app.appendStatus(sprintf('Output started: %s', char(datetime('now', 'Format', 'yyyy-MM-dd HH:mm:ss'))));
+                drawnow;
+
+                payload = struct('results', results, 'params', exportParams);
+                results = BPM_drill_AI_app_engine('export', payload);
+                if isfield(results.params, 'runtimeProgressCallback')
+                    results.params = rmfield(results.params, 'runtimeProgressCallback');
+                end
+                app.Results = results;
+                app.Params.output = results.params.output;
+                app.appendStatus(sprintf('Output finished in %.2f s. Directory: %s', ...
+                    toc(exportStarted), results.params.output.outputDir));
+            catch ME
+                app.appendStatus(sprintf('ERROR: %s', ME.message));
+                if ~isempty(app.UIFigure) && isvalid(app.UIFigure)
+                    uialert(app.UIFigure, getReport(ME, 'extended', 'hyperlinks', 'off'), 'BPM Drill AI App');
+                end
+            end
+            clear runningStateCleanup;
         end
 
         function outputDirButtonPushed(app)
@@ -354,6 +427,60 @@ classdef BPM_drill_AI_app < matlab.apps.AppBase
             params = app.normalizeAndValidateParams(params);
         end
 
+        function outputParams = collectOutputParams(app, outputParams)
+            fields = fieldnames(outputParams);
+            for fieldIndex = 1:numel(fields)
+                fieldName = fields{fieldIndex};
+                key = app.controlKey('output', fieldName);
+                if ~isfield(app.Controls, key)
+                    continue;
+                end
+
+                control = app.Controls.(key);
+                oldValue = outputParams.(fieldName);
+                if islogical(oldValue)
+                    outputParams.(fieldName) = logical(control.Value);
+                elseif ischar(oldValue) || isstring(oldValue)
+                    outputParams.(fieldName) = char(string(control.Value));
+                else
+                    outputParams.(fieldName) = app.controlValueToParamValue('output', fieldName, control.Value);
+                end
+            end
+
+            outputParams.cropHalfWidthPixels = round(outputParams.cropHalfWidthPixels);
+            outputParams.referenceSliceIndex = round(outputParams.referenceSliceIndex);
+
+            numericFields = fieldnames(outputParams);
+            for fieldIndex = 1:numel(numericFields)
+                fieldName = numericFields{fieldIndex};
+                value = outputParams.(fieldName);
+                if isnumeric(value) && (~isscalar(value) || ~isfinite(value))
+                    error('params.output.%s must be a finite scalar number.', fieldName);
+                end
+            end
+            if outputParams.helicalOffsetStepDeg == 0
+                error('params.output.helicalOffsetStepDeg must be nonzero.');
+            end
+            if outputParams.rotatedSlmStepDeg == 0
+                error('params.output.rotatedSlmStepDeg must be nonzero.');
+            end
+            if outputParams.cropHalfWidthPixels < 0
+                error('params.output.cropHalfWidthPixels must be nonnegative.');
+            end
+            if outputParams.referenceSliceIndex < 1
+                error('params.output.referenceSliceIndex must be at least 1.');
+            end
+        end
+
+        function hasAction = hasSelectedOutputAction(~, outputParams)
+            hasAction = outputParams.write3DIntensity || ...
+                outputParams.writeAllPhase || ...
+                outputParams.writeHelicalPhase || ...
+                outputParams.writeHelicalOffsetSlmBatch || ...
+                outputParams.writeRotatedSlmBatch || ...
+                outputParams.assignResultsToBaseWorkspace;
+        end
+
         function params = normalizeAndValidateParams(app, params)
             params.simulation.useBPM = true;
 
@@ -373,7 +500,8 @@ classdef BPM_drill_AI_app < matlab.apps.AppBase
                 groupName = numericPaths{index, 1};
                 fieldName = numericPaths{index, 2};
                 value = params.(groupName).(fieldName);
-                if ~isnumeric(value) || ~isscalar(value) || ~isfinite(value)
+                if ~isnumeric(value) || ~isscalar(value) || ...
+                        (~isfinite(value) && ~app.allowsInfiniteParameter(groupName, fieldName, value))
                     error('params.%s.%s must be a finite scalar number.', groupName, fieldName);
                 end
             end
@@ -387,6 +515,15 @@ classdef BPM_drill_AI_app < matlab.apps.AppBase
             if params.laser.wavelengthMm <= 0
                 error('Wavelength must be positive.');
             end
+            if params.beam.waistRadiusMm <= 0
+                error('params.beam.waistRadiusMm must be positive.');
+            end
+            if params.beam.beamQualityM2 < 1
+                error('params.beam.beamQualityM2 must be at least 1.');
+            end
+            if ~any(strcmp(params.beam.beamQualityModel, app.beamQualityModelOptions()))
+                error('params.beam.beamQualityModel must be effectiveGaussian, coherentHG, or incoherentHG.');
+            end
             if params.phase.airyScaleMm == 0
                 error('params.phase.airyScaleMm must be nonzero.');
             end
@@ -398,23 +535,20 @@ classdef BPM_drill_AI_app < matlab.apps.AppBase
             end
             switch params.phase.axiconMode
                 case 'coneAngle'
-                    if params.phase.axiconConeAngleDeg <= 0 || params.phase.axiconConeAngleDeg >= 90
-                        error('Axicon cone angle beta must be between 0 and 90 degrees.');
+                    if abs(params.phase.axiconConeAngleDeg) >= 90
+                        error('Axicon cone angle beta must be between -90 and 90 degrees.');
                     end
                 case 'radialPeriodMm'
-                    if params.phase.axiconRadialPeriodMm <= 0
-                        error('Axicon radial period in mm must be positive.');
+                    if params.phase.axiconRadialPeriodMm == 0
+                        error('Axicon radial period in mm must be nonzero. Use Inf for beta = 0.');
                     end
                 case 'radialPeriodPx'
-                    if params.phase.axiconRadialPeriodPx <= 0
-                        error('Axicon radial period in pixels must be positive.');
+                    if params.phase.axiconRadialPeriodPx == 0
+                        error('Axicon radial period in pixels must be nonzero. Use Inf for beta = 0.');
                     end
                 case 'physicalEquivalent'
                     if params.phase.axiconIndex <= 0
                         error('Axicon refractive index must be positive.');
-                    end
-                    if params.phase.axiconAngleDeg <= 0
-                        error('Physical axicon base angle alpha must be positive.');
                     end
             end
             if params.optics.lens1FocalLengthMm <= 0 || params.optics.lens2FocalLengthMm <= 0
@@ -457,14 +591,15 @@ classdef BPM_drill_AI_app < matlab.apps.AppBase
                     end
                 end
             end
+            app.updateBeamQualityControlStates();
             app.updateAxiconControlStates();
             app.syncAxiconEquivalentControls();
         end
 
         function updateResultPreview(app, results)
             app.showImage(app.ResultAxes.slmPhase, angle(results.inputField), 'Phase on SLM');
-            app.showImage(app.ResultAxes.inputIntensity, abs(results.inputField).^2, 'Input beam |E|^2');
-            app.showImage(app.ResultAxes.angularSpectrum, abs(results.angularSpectrum).^2, 'Angular spectrum |F|^2');
+            app.showImage(app.ResultAxes.inputIntensity, app.resultInputIntensity(results), 'Input beam |E|^2');
+            app.showImage(app.ResultAxes.angularSpectrum, app.resultAngularSpectrumIntensity(results), 'Angular spectrum |F|^2');
             app.showImage(app.ResultAxes.helicalPhase, results.phase.helical, 'Helical phase');
             app.showImage(app.ResultAxes.axiconPhase, angle(exp(1i * results.phase.axicon)), 'Axicon phase');
             app.showImage(app.ResultAxes.vortexPhase, angle(exp(1i * results.phase.vortex)), 'Vortex phase');
@@ -501,6 +636,22 @@ classdef BPM_drill_AI_app < matlab.apps.AppBase
             app.addBlankColorbarSlot(ax);
             hold(ax, 'off');
             legend(ax, 'Location', 'northeast');
+        end
+
+        function intensity = resultInputIntensity(~, results)
+            if isfield(results, 'inputIntensity') && ~isempty(results.inputIntensity)
+                intensity = results.inputIntensity;
+            else
+                intensity = abs(results.inputField) .^ 2;
+            end
+        end
+
+        function intensity = resultAngularSpectrumIntensity(~, results)
+            if isfield(results, 'angularSpectrumIntensity') && ~isempty(results.angularSpectrumIntensity)
+                intensity = results.angularSpectrumIntensity;
+            else
+                intensity = abs(results.angularSpectrum) .^ 2;
+            end
         end
 
         function showImage(~, ax, data, titleText)
@@ -601,11 +752,20 @@ classdef BPM_drill_AI_app < matlab.apps.AppBase
                     results.derived.axicon.physicalIndex, results.derived.axicon.physicalBaseAngleDeg);
                 sprintf('Z slices: %d', numel(results.propagation.zValuesMm));
                 sprintf('Pulse peak power: %.12g W', results.derived.pulsePeakPowerW);
-                sprintf('M=%.12g, M2=%.12g', ...
+                sprintf('Laser beam M2: %.12g, model: %s (%s)', ...
+                    results.derived.beam.qualityM2, results.derived.beam.qualityModelKey, ...
+                    results.derived.beam.qualityModel);
+                sprintf('M2 mode weights: %s', results.derived.beam.modeSummaryText);
+                sprintf('Effective Gaussian waist: %.12g mm, coherent phases: x=%.12g deg, y=%.12g deg', ...
+                    results.derived.beam.effectiveWaistRadiusMm, ...
+                    results.derived.beam.hgCoherentPhaseXDeg, results.derived.beam.hgCoherentPhaseYDeg);
+                sprintf('Optics M=%.12g, opticsM2=%.12g', ...
                     results.derived.optics.M, results.derived.optics.M2);
                 sprintf('beta0=%.12g deg, beta1=%.12g deg, betaMaterial=%.12g deg', ...
                     results.derived.optics.beta0Deg, results.derived.optics.beta1Deg, ...
                     results.derived.optics.betaMaterialDeg);
+                sprintf('Axicon focus length: %.12g mm (signed focus %.12g mm)', ...
+                    results.derived.optics.zFocusMm, results.derived.optics.zFocusSignedMm);
                 sprintf('Reference slice index: %d', results.postprocess.referenceSliceIndex);
                 sprintf('Center pixel: row=%d, col=%d, x=%.12g mm, y=%.12g mm', ...
                     results.postprocess.centerRowIndex, results.postprocess.centerColumnIndex, ...
@@ -624,8 +784,10 @@ classdef BPM_drill_AI_app < matlab.apps.AppBase
             end
 
             currentLines = string(app.StatusTextArea.Value);
+            currentLines = currentLines(:);
             currentLines(currentLines == "") = [];
-            currentLines = [currentLines; newLine];
+            currentLines = currentLines(:);
+            currentLines = [currentLines; newLine(:)];
             if numel(currentLines) > 80
                 currentLines = currentLines(end-79:end);
             end
@@ -647,9 +809,12 @@ classdef BPM_drill_AI_app < matlab.apps.AppBase
             end
 
             currentLines = string(app.LogTextArea.Value);
+            currentLines = currentLines(:);
             currentLines(currentLines == "Run started. Waiting for progress messages...") = [];
             currentLines(currentLines == "") = [];
-            currentLines = [currentLines; string(message)];
+            currentLines = currentLines(:);
+            newLines = string(message);
+            currentLines = [currentLines; newLines(:)];
             if numel(currentLines) > 500
                 currentLines = currentLines(end-499:end);
             end
@@ -657,27 +822,132 @@ classdef BPM_drill_AI_app < matlab.apps.AppBase
             drawnow limitrate;
         end
 
-        function setRunningState(app, isRunning)
+        function setRunningState(app, isRunning, busyText)
+            if nargin < 3
+                busyText = 'Running...';
+            end
             app.IsRunning = isRunning;
+            if isempty(app.RunButton) || ~isvalid(app.RunButton)
+                return;
+            end
             if isRunning
                 app.RunButton.Enable = 'on';
-                app.RunButton.Text = 'Running...';
+                app.RunButton.Text = busyText;
                 app.RunButton.BackgroundColor = [1.0 0.78 0.12];
                 app.RunButton.FontColor = [0.05 0.05 0.05];
-                app.ResetButton.Enable = 'off';
+                if ~isempty(app.OutputButton) && isvalid(app.OutputButton)
+                    app.OutputButton.Enable = 'off';
+                end
+                if ~isempty(app.ResetButton) && isvalid(app.ResetButton)
+                    app.ResetButton.Enable = 'off';
+                end
             else
                 app.RunButton.Enable = 'on';
                 app.RunButton.Text = app.RunButtonIdleText;
                 app.RunButton.BackgroundColor = app.RunButtonIdleBackgroundColor;
                 app.RunButton.FontColor = app.RunButtonIdleFontColor;
-                app.ResetButton.Enable = 'on';
+                if ~isempty(app.OutputButton) && isvalid(app.OutputButton)
+                    app.OutputButton.Enable = 'on';
+                end
+                if ~isempty(app.ResetButton) && isvalid(app.ResetButton)
+                    app.ResetButton.Enable = 'on';
+                end
             end
             drawnow limitrate;
+        end
+
+        function shouldAssign = shouldAssignResultsToBaseWorkspace(~, params)
+            shouldAssign = isfield(params, 'output') && ...
+                isfield(params.output, 'assignResultsToBaseWorkspace') && ...
+                isscalar(params.output.assignResultsToBaseWorkspace) && ...
+                logical(params.output.assignResultsToBaseWorkspace);
+        end
+
+        function isAllowed = allowsInfiniteParameter(~, groupName, fieldName, value)
+            isAllowed = strcmp(groupName, 'phase') && ...
+                (strcmp(fieldName, 'axiconRadialPeriodMm') || strcmp(fieldName, 'axiconRadialPeriodPx')) && ...
+                isinf(value);
+        end
+
+        function message = simulationEstimateMessage(app, params)
+            zSliceCount = numel(0:params.simulation.dzMm:params.simulation.zRangeMm);
+            if isfield(params.simulation, 'useBPM') && ~params.simulation.useBPM
+                zSliceCount = 1;
+            end
+            complexStackGiB = double(params.simulation.N) ^ 2 * double(zSliceCount) * 16 / 1024 ^ 3;
+            model = '';
+            if isfield(params.beam, 'beamQualityModel')
+                model = char(string(params.beam.beamQualityModel));
+            end
+            if isfield(params.beam, 'beamQualityM2') && params.beam.beamQualityM2 > 1 && strcmp(model, 'incoherentHG')
+                intensityStackGiB = double(params.simulation.N) ^ 2 * double(zSliceCount) * 8 / 1024 ^ 3;
+                modeCount = app.beamQualityModeCount(params.beam.beamQualityM2);
+                message = sprintf(['Estimated BPM stacks: %.2f GiB output intensity + %.2f GiB transient complex per HG mode ', ...
+                    '(%d modes, %d z slices).'], intensityStackGiB, complexStackGiB, modeCount, zSliceCount);
+            else
+                message = sprintf('Estimated BPM field stack: %.2f GiB (%d z slices, M2 model=%s).', ...
+                    complexStackGiB, zSliceCount, model);
+            end
+        end
+
+        function modeCount = beamQualityModeCount(~, beamQualityM2)
+            excessOrder = max(0, beamQualityM2 - 1);
+            lowOrder = floor(excessOrder);
+            highOrder = ceil(excessOrder);
+            highWeight = excessOrder - lowOrder;
+            if highWeight < 1e-12
+                highOrder = lowOrder;
+            elseif 1 - highWeight < 1e-12
+                lowOrder = highOrder;
+            end
+
+            modeCount = 0;
+            if lowOrder == 0
+                modeCount = modeCount + 1;
+            else
+                modeCount = modeCount + 2;
+            end
+            if highOrder ~= lowOrder
+                if highOrder == 0
+                    modeCount = modeCount + 1;
+                else
+                    modeCount = modeCount + 2;
+                end
+            end
         end
 
         function value = getTextControlValue(app, groupName, fieldName)
             control = app.Controls.(app.controlKey(groupName, fieldName));
             value = char(string(control.Value));
+        end
+
+        function beamQualityModelChanged(app)
+            app.updateBeamQualityControlStates();
+            modelControlKey = app.controlKey('beam', 'beamQualityModel');
+            if isfield(app.Controls, modelControlKey)
+                app.appendStatus(sprintf('M2 model: %s', char(string(app.Controls.(modelControlKey).Value))));
+            end
+        end
+
+        function updateBeamQualityControlStates(app)
+            modelKey = app.controlKey('beam', 'beamQualityModel');
+            phaseXKey = app.controlKey('beam', 'hgCoherentPhaseXDeg');
+            phaseYKey = app.controlKey('beam', 'hgCoherentPhaseYDeg');
+            if ~isfield(app.Controls, modelKey)
+                return;
+            end
+
+            isCoherentHg = strcmp(char(string(app.Controls.(modelKey).Value)), 'coherentHG');
+            phaseEnable = 'off';
+            if isCoherentHg
+                phaseEnable = 'on';
+            end
+            if isfield(app.Controls, phaseXKey)
+                app.Controls.(phaseXKey).Enable = phaseEnable;
+            end
+            if isfield(app.Controls, phaseYKey)
+                app.Controls.(phaseYKey).Enable = phaseEnable;
+            end
         end
 
         function axiconModeChanged(app)
@@ -770,8 +1040,8 @@ classdef BPM_drill_AI_app < matlab.apps.AppBase
                 kBackground = 2 * pi * backgroundIndex / wavelengthMm;
                 [coneAngleRad, krRadPerMm] = app.resolveAxiconControlsToConeAndKr(mode, kBackground, gridPixelPitchMm);
                 if ~isfinite(coneAngleRad) || ~isfinite(krRadPerMm) || ...
-                        coneAngleRad <= 0 || coneAngleRad >= pi / 2 || ...
-                        krRadPerMm <= 0 || krRadPerMm >= kBackground
+                        abs(coneAngleRad) >= pi / 2 || ...
+                        abs(krRadPerMm) >= kBackground
                     return;
                 end
 
@@ -841,6 +1111,10 @@ classdef BPM_drill_AI_app < matlab.apps.AppBase
             options = {'coneAngle', 'radialPeriodMm', 'radialPeriodPx', 'physicalEquivalent'};
         end
 
+        function options = beamQualityModelOptions(~)
+            options = {'effectiveGaussian', 'coherentHG', 'incoherentHG'};
+        end
+
         function isMatch = isAxiconSyncControl(~, groupName, fieldName)
             paramPath = sprintf('%s.%s', groupName, fieldName);
             syncPaths = {
@@ -898,6 +1172,14 @@ classdef BPM_drill_AI_app < matlab.apps.AppBase
                     description = 'Input Gaussian beam waist radius, in mm. This controls the incident spot size and initial intensity envelope.';
                 case 'beam.fieldAmplitude'
                     description = 'Scale factor for the input field amplitude. It scales the complex field amplitude and is mainly useful for quick debugging.';
+                case 'beam.beamQualityM2'
+                    description = 'Laser beam-quality factor M^2. How it changes the simulated field is selected by beamQualityModel.';
+                case 'beam.beamQualityModel'
+                    description = 'Selects how beamQualityM2 enters the simulation: effective Gaussian, coherent HG field sum, or incoherent HG intensity sum.';
+                case 'beam.hgCoherentPhaseXDeg'
+                    description = 'Relative phase, in degrees, applied to HGn0 terms when beamQualityModel is coherentHG. Ignored by the other M2 models.';
+                case 'beam.hgCoherentPhaseYDeg'
+                    description = 'Relative phase, in degrees, applied to HG0n terms when beamQualityModel is coherentHG. Ignored by the other M2 models.';
                 case 'phase.airyStrength'
                     description = 'Strength of the cubic Airy phase term. Set to 0 to disable the Airy phase.';
                 case 'phase.airyScaleMm'
@@ -905,17 +1187,17 @@ classdef BPM_drill_AI_app < matlab.apps.AppBase
                 case 'phase.axiconMode'
                     description = 'Selects which axicon parameter is active. The engine converts the selected definition to one radial phase slope and cone angle.';
                 case 'phase.axiconConeAngleDeg'
-                    description = 'Effective holographic axicon cone angle beta, in degrees. Active when axiconMode is coneAngle.';
+                    description = 'Signed effective holographic axicon cone angle beta, in degrees. Zero disables the axicon radial slope; negative values reverse the radial phase direction.';
                 case 'phase.axiconRadialPeriodMm'
-                    description = 'Radial 2pi phase period of the SLM axicon, in mm. Active when axiconMode is radialPeriodMm.';
+                    description = 'Signed radial 2pi phase period of the SLM axicon, in mm. Use Inf for beta = 0; negative values reverse the radial phase direction.';
                 case 'phase.axiconRadialPeriodPx'
-                    description = 'Radial 2pi phase period in pixels of the generated phase matrix. Active when axiconMode is radialPeriodPx.';
+                    description = 'Signed radial 2pi phase period in generated phase-map pixels. Use Inf for beta = 0; negative values reverse the radial phase direction.';
                 case 'phase.axiconIndex'
                     description = 'Refractive index of the equivalent physical axicon. Active only when axiconMode is physicalEquivalent.';
                 case 'phase.axiconAngleDeg'
                     description = 'Base angle alpha of the equivalent physical axicon, in degrees. Active only when axiconMode is physicalEquivalent.';
                 case 'phase.curvedMaxShiftMm'
-                    description = 'Target lateral shift at the end of the curved Bessel trajectory. Set to 0 to disable the curved trajectory.';
+                    description = 'Target lateral shift at the end of the curved Bessel trajectory. Set to 0 to disable it; nonzero values require beta not equal to 0.';
                 case 'phase.compensationPhase'
                     description = 'Extra compensation phase hook. It is currently applied as an additional global phase term.';
                 case 'phase.vortexCharge'
@@ -991,6 +1273,8 @@ classdef BPM_drill_AI_app < matlab.apps.AppBase
                     description = 'Reference z-slice index used for power-density normalization. If it exceeds the stack length, the last slice is used.';
                 case 'output.printProgress'
                     description = 'Prints BPM progress messages to the MATLAB or VS Code terminal.';
+                case 'output.assignResultsToBaseWorkspace'
+                    description = 'When enabled, exports the full results struct and large field arrays to the base workspace. Leave off for lower memory use in the app.';
                 case 'output.progressIntervalSeconds'
                     description = 'Time interval between BPM progress messages, in seconds. Smaller values report more frequently.';
                 case 'output.outputDir'

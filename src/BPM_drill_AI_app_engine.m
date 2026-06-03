@@ -4,6 +4,7 @@ function varargout = BPM_drill_AI_app_engine(action, params)
 % not modified. Use:
 %   params = BPM_drill_AI_app_engine('defaults');
 %   results = BPM_drill_AI_app_engine('run', params);
+%   results = BPM_drill_AI_app_engine('export', struct('results', results, 'params', params));
 
 if nargin == 0
     action = 'run';
@@ -27,6 +28,32 @@ switch action
         else
             params = localApplyWorkspaceOverrides(localBuildDefaultParams(), params);
         end
+    case "export"
+        if isempty(params) || ~isstruct(params) || ~isfield(params, 'results')
+            error('Export action requires a struct with a results field.');
+        end
+        results = params.results;
+        if isfield(params, 'params')
+            exportParams = params.params;
+        elseif isfield(results, 'params')
+            exportParams = results.params;
+        else
+            error('Export action requires params or results.params.');
+        end
+
+        exportTimer = tic;
+        exportParams = localApplyWorkspaceOverrides(localBuildDefaultParams(), exportParams);
+        exportParams = localPrepareParams(exportParams);
+        results.params = exportParams;
+        if localShouldAssignResultsToBaseWorkspace(exportParams)
+            localAssignResultsToBaseWorkspace(results, exportParams);
+        end
+        localExportResults(results, exportParams);
+        results.lastExportElapsedSeconds = toc(exportTimer);
+        if nargout > 0
+            varargout{1} = results;
+        end
+        return;
     otherwise
         error('Unknown BPM_drill_AI_app_engine action: %s', action);
 end
@@ -36,14 +63,9 @@ params = localPrepareParams(params);
 results = localRunSimulation(params);
 results.params = params;
 
-% Keep the same workspace-friendly variable names as the script version, but
-% write them to the base workspace from the copied app engine.
-assignin('base', 'E', results.inputField);
-assignin('base', 'F', results.angularSpectrum);
-assignin('base', 'E_3D_BPM', results.propagation.E3D);
-assignin('base', 'phase_all', results.phase.all);
-assignin('base', 'phase_helical', results.phase.helical);
-assignin('base', 'output_dir', params.output.outputDir);
+if localShouldAssignResultsToBaseWorkspace(params)
+    localAssignResultsToBaseWorkspace(results, params);
+end
 
 if params.output.plotFigures
     localPlotResults(results, params);
@@ -97,7 +119,11 @@ params.laser = struct( ... % 与激光源自身有关的参数
 
 params.beam = struct( ... % 与入射光束横向包络有关的参数
     'waistRadiusMm', 3.85 / 2, ... % 高斯光束腰半径，单位 mm
-    'fieldAmplitude', 1); % 输入场的幅值系数
+    'fieldAmplitude', 1, ... % 输入场的幅值系数
+    'beamQualityM2', 1.2, ... % Laser beam-quality factor M^2; 1 is ideal Gaussian.
+    'beamQualityModel', 'incoherentHG', ... % effectiveGaussian / coherentHG / incoherentHG
+    'hgCoherentPhaseXDeg', 0, ... % Relative phase for HGn0 terms when beamQualityModel is coherentHG.
+    'hgCoherentPhaseYDeg', 0); % Relative phase for HG0n terms when beamQualityModel is coherentHG.
 
 params.phase = struct( ... % 与相位构造有关的参数
     'airyStrength', 0, ... % Airy 三次相位的强度系数；0 表示关闭
@@ -155,6 +181,30 @@ params.output = struct( ... % 与绘图和导出有关的参数
     'writeProgressLog', false, ... % 是否把 BPM 进度同步写入 outputs 里的 log 文件
     'progressLogFile', '', ... % 进度日志文件路径；留空时程序自动放到 outputs/BPM_drill_AI_progress.log
     'outputDir', ''); % 输出目录；稍后由程序自动填入
+params.output.assignResultsToBaseWorkspace = false;
+end
+
+function shouldAssign = localShouldAssignResultsToBaseWorkspace(params)
+shouldAssign = isfield(params, 'output') && ...
+    isfield(params.output, 'assignResultsToBaseWorkspace') && ...
+    isscalar(params.output.assignResultsToBaseWorkspace) && ...
+    logical(params.output.assignResultsToBaseWorkspace);
+end
+
+function localAssignResultsToBaseWorkspace(results, params)
+% Keep the same workspace-friendly variable names as the script version, but
+% only when the app/user explicitly requests the extra workspace copies.
+assignin('base', 'E', results.inputField);
+assignin('base', 'F', results.angularSpectrum);
+if isfield(results.propagation, 'E3D') && ~isempty(results.propagation.E3D)
+    assignin('base', 'E_3D_BPM', results.propagation.E3D);
+else
+    assignin('base', 'E_3D_BPM', []);
+end
+assignin('base', 'I_3D_BPM', localGetPropagationIntensity(results.propagation));
+assignin('base', 'phase_all', results.phase.all);
+assignin('base', 'phase_helical', results.phase.helical);
+assignin('base', 'output_dir', params.output.outputDir);
 end
 
 function params = localApplyWorkspaceOverrides(params, overrides)
@@ -255,24 +305,156 @@ function results = localRunSimulation(params)
 grid = localSetupGrid(params.simulation); % 根据仿真尺寸和采样点数建立空间网格与频域网格
 derived = localBuildDerivedQuantities(params); % 计算一些从原始参数推导出来的量
 phase = localBuildPhaseMaps(grid, params, derived); % 构造所有相位分量以及总相位
+inputModes = localBuildInputModes(grid, params, phase, derived); % 按 beamQualityM2 构造理想高斯或 HG 模式混合输入
 
-inputEnvelope = params.beam.fieldAmplitude * exp(-(grid.r .^ 2) / params.beam.waistRadiusMm ^ 2); % 构造高斯振幅包络
-inputField = inputEnvelope .* exp(1i * phase.all); % 把总相位乘到高斯包络上，得到输入复振幅场
-angularSpectrum = fftshift(fft2(inputField)); % 对输入场做二维傅里叶变换，得到角谱
-
-propagation = localRunBpmPropagation(inputField, grid, params, derived); % 用 FFT-BPM 做 z 方向传播
-postprocess = localComputePostprocess(propagation.E3D, propagation.zValuesMm, grid, params, derived); % 对传播结果做功率密度等后处理
+propagation = localRunBpmPropagationForModes(inputModes, grid, params, derived); % 用 FFT-BPM 做 z 方向传播
+postprocess = localComputePostprocess(localGetPropagationIntensity(propagation), propagation.zValuesMm, grid, params, derived, true); % 对传播结果做功率密度等后处理
 
 results = struct(); % 新建结果结构体
 results.params = params; % 保存完整参数，便于后面绘图/导出统一调用
 results.grid = grid; % 保存网格信息
 results.derived = derived; % 保存派生量
 results.phase = phase; % 保存所有相位分量
-results.inputEnvelope = inputEnvelope; % 保存输入光束包络
-results.inputField = inputField; % 保存输入复场
-results.angularSpectrum = angularSpectrum; % 保存输入场角谱
+results.inputEnvelope = inputModes.referenceEnvelope; % 保存输入光束包络
+results.inputField = inputModes.referenceField; % 保存用于 SLM 相位的参考输入复场
+results.inputIntensity = inputModes.inputIntensity; % 保存 M2 模式混合后的输入强度
+results.angularSpectrum = inputModes.referenceAngularSpectrum; % 保存参考 HG00 角谱
+results.angularSpectrumIntensity = inputModes.angularSpectrumIntensity; % 保存 M2 模式混合后的角谱强度
+results.inputModeSummaries = inputModes.modeSummaries; % 保存模式权重，便于检查 M2 近似
 results.propagation = propagation; % 保存传播结果
 results.postprocess = postprocess; % 保存后处理结果
+end
+
+function inputModes = localBuildInputModes(grid, params, phase, derived)
+if params.beam.waistRadiusMm <= 0
+    error('params.beam.waistRadiusMm must be positive.');
+end
+if ~isfinite(params.beam.fieldAmplitude)
+    error('params.beam.fieldAmplitude must be finite.');
+end
+if params.beam.beamQualityM2 < 1
+    error('params.beam.beamQualityM2 must be at least 1.');
+end
+
+phaseFactor = exp(1i * phase.all);
+if strcmp(derived.beam.qualityModelKey, 'effectiveGaussian')
+    referenceWaistRadiusMm = derived.beam.effectiveWaistRadiusMm;
+else
+    referenceWaistRadiusMm = params.beam.waistRadiusMm;
+end
+referenceEnvelope = params.beam.fieldAmplitude * exp(-(grid.r .^ 2) / referenceWaistRadiusMm ^ 2);
+referenceField = referenceEnvelope .* phaseFactor;
+referenceAngularSpectrum = fftshift(fft2(referenceField));
+referencePower = sum(abs(referenceEnvelope) .^ 2, 'all');
+if referencePower <= 0 || ~isfinite(referencePower)
+    error('Reference Gaussian input beam has zero or invalid power.');
+end
+
+modeSpecs = derived.beam.modeSpecs;
+inputIntensity = zeros(grid.N, grid.N);
+angularSpectrumIntensity = zeros(grid.N, grid.N);
+hgModes = struct('label', {}, 'orderX', {}, 'orderY', {}, 'weight', {}, 'field', {});
+
+for modeIndex = 1:numel(modeSpecs)
+    rawEnvelope = params.beam.fieldAmplitude * localHermiteGaussianEnvelope( ...
+        grid, params.beam.waistRadiusMm, modeSpecs(modeIndex).orderX, modeSpecs(modeIndex).orderY);
+    rawPower = sum(abs(rawEnvelope) .^ 2, 'all');
+    if rawPower <= 0 || ~isfinite(rawPower)
+        error('HG input mode %s has zero or invalid power.', modeSpecs(modeIndex).label);
+    end
+    envelope = rawEnvelope * sqrt(referencePower / rawPower);
+    modeField = envelope .* phaseFactor;
+    modeAngularSpectrum = fftshift(fft2(modeField));
+
+    inputIntensity = inputIntensity + modeSpecs(modeIndex).weight * abs(modeField) .^ 2;
+    angularSpectrumIntensity = angularSpectrumIntensity + modeSpecs(modeIndex).weight * abs(modeAngularSpectrum) .^ 2;
+
+    hgModes(modeIndex).label = modeSpecs(modeIndex).label;
+    hgModes(modeIndex).orderX = modeSpecs(modeIndex).orderX;
+    hgModes(modeIndex).orderY = modeSpecs(modeIndex).orderY;
+    hgModes(modeIndex).weight = modeSpecs(modeIndex).weight;
+    hgModes(modeIndex).field = modeField;
+end
+
+switch derived.beam.qualityModelKey
+    case 'effectiveGaussian'
+        propagationModes = struct('label', 'effectiveGaussian', 'orderX', 0, 'orderY', 0, ...
+            'weight', 1, 'field', referenceField);
+        inputIntensity = abs(referenceField) .^ 2;
+        angularSpectrumIntensity = abs(referenceAngularSpectrum) .^ 2;
+        requiresIncoherentSum = false;
+    case 'coherentHG'
+        coherentField = zeros(size(referenceField), 'like', referenceField);
+        for modeIndex = 1:numel(hgModes)
+            relativePhase = localCoherentHgRelativePhase(params, hgModes(modeIndex));
+            coherentField = coherentField + sqrt(hgModes(modeIndex).weight) * exp(1i * relativePhase) * hgModes(modeIndex).field;
+        end
+        coherentPower = sum(abs(coherentField) .^ 2, 'all');
+        if coherentPower <= 0 || ~isfinite(coherentPower)
+            error('Coherent HG input field has zero or invalid power.');
+        end
+        coherentField = coherentField * sqrt(referencePower / coherentPower);
+        coherentAngularSpectrum = fftshift(fft2(coherentField));
+        propagationModes = struct('label', 'coherentHG', 'orderX', NaN, 'orderY', NaN, ...
+            'weight', 1, 'field', coherentField);
+        inputIntensity = abs(coherentField) .^ 2;
+        angularSpectrumIntensity = abs(coherentAngularSpectrum) .^ 2;
+        requiresIncoherentSum = false;
+    case 'incoherentHG'
+        propagationModes = hgModes;
+        requiresIncoherentSum = true;
+    otherwise
+        error('Unknown beamQualityModel: %s', derived.beam.qualityModelKey);
+end
+
+inputModes = struct();
+inputModes.referenceEnvelope = referenceEnvelope;
+inputModes.referenceField = referenceField;
+inputModes.referenceAngularSpectrum = referenceAngularSpectrum;
+inputModes.inputIntensity = inputIntensity;
+inputModes.angularSpectrumIntensity = angularSpectrumIntensity;
+inputModes.modes = propagationModes;
+inputModes.requiresIncoherentSum = requiresIncoherentSum;
+inputModes.modeSummaries = rmfield(hgModes, 'field');
+end
+
+function relativePhase = localCoherentHgRelativePhase(params, modeSpec)
+if modeSpec.orderX == 0 && modeSpec.orderY == 0
+    relativePhase = 0;
+elseif modeSpec.orderX > 0
+    relativePhase = deg2rad(params.beam.hgCoherentPhaseXDeg);
+elseif modeSpec.orderY > 0
+    relativePhase = deg2rad(params.beam.hgCoherentPhaseYDeg);
+else
+    relativePhase = 0;
+end
+end
+
+function envelope = localHermiteGaussianEnvelope(grid, waistRadiusMm, orderX, orderY)
+scaledX = sqrt(2) * grid.x / waistRadiusMm;
+scaledY = sqrt(2) * grid.y / waistRadiusMm;
+hermiteX = localHermitePolynomial(orderX, scaledX);
+hermiteY = localHermitePolynomial(orderY, scaledY);
+envelope = hermiteX .* hermiteY .* exp(-(grid.r .^ 2) / waistRadiusMm ^ 2);
+end
+
+function values = localHermitePolynomial(order, argument)
+if order == 0
+    values = ones(size(argument));
+    return;
+elseif order == 1
+    values = 2 * argument;
+    return;
+end
+
+previous = ones(size(argument));
+current = 2 * argument;
+for currentOrder = 2:order
+    nextValues = 2 * argument .* current - 2 * (currentOrder - 1) * previous;
+    previous = current;
+    current = nextValues;
+end
+values = current;
 end
 
 function grid = localSetupGrid(simulation)
@@ -310,6 +492,7 @@ function derived = localBuildDerivedQuantities(params)
 
 derived = struct(); % 新建派生量结构体
 
+derived.beam = localBuildBeamQualityDerived(params.beam);
 derived.kBackground = 2 * pi * params.material.backgroundIndex / params.laser.wavelengthMm; % 背景介质中的总波数 k
 derived.kSample = 2 * pi * params.material.sampleIndex / params.laser.wavelengthMm; % 样品中的总波数 k_m
 derived.pulseEnergyJ = params.laser.powerW / params.laser.repetitionRateHz; % 单脉冲能量 = 平均功率 / 重复频率
@@ -323,7 +506,8 @@ derived.optics.M2 = derived.optics.M ^ 2; % 缩放倍率平方 M2，用于材料
 derived.optics.magnification = derived.optics.M; % 兼容旧字段名
 derived.optics.beta0Rad = derived.axicon.coneAngleRad; % beta_0 现在表示全息 axicon 的有效出射锥角
 derived.optics.beta0Deg = rad2deg(derived.optics.beta0Rad); % 把 beta_0 转成角度方便查看
-derived.optics.beta1Rad = atan(tan(derived.optics.beta0Rad) * params.optics.lens1FocalLengthMm / params.optics.lens2FocalLengthMm); % 原脚本中的 beta_1
+tanBeta0 = tan(derived.optics.beta0Rad);
+derived.optics.beta1Rad = atan(tanBeta0 * params.optics.lens1FocalLengthMm / params.optics.lens2FocalLengthMm); % 原脚本中的 beta_1
 derived.optics.beta1Deg = rad2deg(derived.optics.beta1Rad); % 把 beta_1 转成角度
 betaMaterialArgument = (params.material.backgroundIndex / params.material.sampleIndex) * sin(derived.optics.beta1Rad); % Snell 定律里的 asin 自变量
 if abs(betaMaterialArgument) > 1
@@ -331,12 +515,105 @@ if abs(betaMaterialArgument) > 1
 end
 derived.optics.betaMaterialRad = asin(betaMaterialArgument); % 入射到样品后对应的折射角
 derived.optics.betaMaterialDeg = rad2deg(derived.optics.betaMaterialRad); % 折射角的角度形式
-derived.optics.zFocusMm = params.beam.waistRadiusMm / (2 * tan(derived.optics.beta0Rad)); % 原脚本中的 z_f
+derived.optics.zFocusSignedMm = params.beam.waistRadiusMm / (2 * tanBeta0); % Signed focus position; negative beta gives a virtual focus upstream.
+derived.optics.zFocusMm = abs(derived.optics.zFocusSignedMm); % 原脚本中的 z_f, kept as a positive length.
 derived.optics.deltaZMm = 0.8 * 2 * derived.optics.zFocusMm; % 原脚本中的 delta_z
 derived.optics.deltaZMaterialMm = derived.optics.M2 * derived.optics.deltaZMm; % 原脚本中的 delta_zm
 derived.optics.lens1PositionMm = params.optics.lens1PositionMm; % 第一片透镜位置
 derived.optics.lens2PositionMm = params.optics.lens2PositionMm; % 第二片透镜位置
 derived.optics.samplePositionMm = params.optics.samplePositionMm; % 样品位置
+end
+
+function beamDerived = localBuildBeamQualityDerived(beam)
+beamQualityM2 = beam.beamQualityM2;
+if ~isnumeric(beamQualityM2) || ~isscalar(beamQualityM2) || ~isfinite(beamQualityM2)
+    error('params.beam.beamQualityM2 must be a finite scalar number.');
+end
+if beamQualityM2 < 1
+    error('params.beam.beamQualityM2 must be at least 1.');
+end
+
+modelKey = char(string(beam.beamQualityModel));
+validModels = {'effectiveGaussian', 'coherentHG', 'incoherentHG'};
+if ~any(strcmp(modelKey, validModels))
+    error('params.beam.beamQualityModel must be effectiveGaussian, coherentHG, or incoherentHG.');
+end
+
+if strcmp(modelKey, 'effectiveGaussian')
+    modeSpecs = struct('label', 'HG00', 'orderX', 0, 'orderY', 0, 'weight', 1);
+else
+    modeSpecs = localBeamQualityModeSpecs(beamQualityM2);
+end
+
+switch modelKey
+    case 'effectiveGaussian'
+        modelName = 'effective Gaussian';
+    case 'coherentHG'
+        modelName = 'coherent Hermite-Gaussian mixture';
+    case 'incoherentHG'
+        modelName = 'incoherent Hermite-Gaussian intensity sum';
+end
+
+beamDerived = struct();
+beamDerived.qualityM2 = beamQualityM2;
+beamDerived.qualityModel = modelName;
+beamDerived.qualityModelKey = modelKey;
+beamDerived.modeSpecs = modeSpecs;
+beamDerived.modeCount = numel(modeSpecs);
+beamDerived.modeSummaryText = localFormatModeSpecWeights(modeSpecs);
+beamDerived.effectiveWaistRadiusMm = beam.waistRadiusMm / beamQualityM2;
+beamDerived.hgCoherentPhaseXDeg = beam.hgCoherentPhaseXDeg;
+beamDerived.hgCoherentPhaseYDeg = beam.hgCoherentPhaseYDeg;
+end
+
+function modeSpecs = localBeamQualityModeSpecs(beamQualityM2)
+excessOrder = max(0, beamQualityM2 - 1);
+lowOrder = floor(excessOrder);
+highOrder = ceil(excessOrder);
+highWeight = excessOrder - lowOrder;
+if highWeight < 1e-12
+    highWeight = 0;
+    highOrder = lowOrder;
+elseif 1 - highWeight < 1e-12
+    highWeight = 0;
+    lowOrder = highOrder;
+end
+lowWeight = 1 - highWeight;
+
+modeSpecs = struct('label', {}, 'orderX', {}, 'orderY', {}, 'weight', {});
+modeSpecs = localAppendBeamQualityGroup(modeSpecs, lowOrder, lowWeight);
+if highOrder ~= lowOrder && highWeight > 0
+    modeSpecs = localAppendBeamQualityGroup(modeSpecs, highOrder, highWeight);
+end
+end
+
+function modeSpecs = localAppendBeamQualityGroup(modeSpecs, order, groupWeight)
+if groupWeight <= 0
+    return;
+end
+if order == 0
+    modeSpecs(end + 1).label = 'HG00';
+    modeSpecs(end).orderX = 0;
+    modeSpecs(end).orderY = 0;
+    modeSpecs(end).weight = groupWeight;
+else
+    modeSpecs(end + 1).label = sprintf('HG%d0', order);
+    modeSpecs(end).orderX = order;
+    modeSpecs(end).orderY = 0;
+    modeSpecs(end).weight = groupWeight / 2;
+    modeSpecs(end + 1).label = sprintf('HG0%d', order);
+    modeSpecs(end).orderX = 0;
+    modeSpecs(end).orderY = order;
+    modeSpecs(end).weight = groupWeight / 2;
+end
+end
+
+function text = localFormatModeSpecWeights(modeSpecs)
+parts = strings(1, numel(modeSpecs));
+for modeIndex = 1:numel(modeSpecs)
+    parts(modeIndex) = sprintf('%s=%.6g', modeSpecs(modeIndex).label, modeSpecs(modeIndex).weight);
+end
+text = char(strjoin(parts, ', '));
 end
 
 function axicon = localResolveAxiconDefinition(params, kBackground)
@@ -358,24 +635,24 @@ switch mode
         krRadPerMm = kBackground * sin(coneAngleRad);
     case 'radialPeriodMm'
         radialPeriodMm = params.phase.axiconRadialPeriodMm;
-        if radialPeriodMm <= 0
-            error('params.phase.axiconRadialPeriodMm must be positive.');
+        if radialPeriodMm == 0
+            error('params.phase.axiconRadialPeriodMm must be nonzero. Use Inf for beta = 0.');
         end
         krRadPerMm = 2 * pi / radialPeriodMm;
         sinConeAngle = krRadPerMm / kBackground;
-        if sinConeAngle <= 0 || sinConeAngle >= 1
+        if abs(sinConeAngle) >= 1
             error('params.phase.axiconRadialPeriodMm is too small for the current wavelength/background index.');
         end
         coneAngleRad = asin(sinConeAngle);
     case 'radialPeriodPx'
         radialPeriodPx = params.phase.axiconRadialPeriodPx;
-        if radialPeriodPx <= 0
-            error('params.phase.axiconRadialPeriodPx must be positive.');
+        if radialPeriodPx == 0
+            error('params.phase.axiconRadialPeriodPx must be nonzero. Use Inf for beta = 0.');
         end
         radialPeriodMm = radialPeriodPx * gridPixelPitchMm;
         krRadPerMm = 2 * pi / radialPeriodMm;
         sinConeAngle = krRadPerMm / kBackground;
-        if sinConeAngle <= 0 || sinConeAngle >= 1
+        if abs(sinConeAngle) >= 1
             error('params.phase.axiconRadialPeriodPx is too small for the current wavelength/background index.');
         end
         coneAngleRad = asin(sinConeAngle);
@@ -391,11 +668,11 @@ switch mode
         krRadPerMm = kBackground * sin(coneAngleRad);
 end
 
-if ~isfinite(coneAngleRad) || coneAngleRad <= 0 || coneAngleRad >= pi / 2
-    error('Resolved axicon cone angle must be between 0 and 90 degrees.');
+if ~isfinite(coneAngleRad) || abs(coneAngleRad) >= pi / 2
+    error('Resolved axicon cone angle must be between -90 and 90 degrees.');
 end
-if ~isfinite(krRadPerMm) || krRadPerMm <= 0 || krRadPerMm >= kBackground
-    error('Resolved axicon radial wavevector must be positive and smaller than the background wave number.');
+if ~isfinite(krRadPerMm) || abs(krRadPerMm) >= kBackground
+    error('Resolved axicon radial wavevector magnitude must be smaller than the background wave number.');
 end
 
 axicon = struct(); % 保存统一后的 axicon 派生量
@@ -423,9 +700,19 @@ phase = struct(); % 新建相位结构体
 phase.airy = params.phase.airyStrength * ((grid.x ./ params.phase.airyScaleMm) .^ 3 + (grid.y ./ params.phase.airyScaleMm) .^ 3); % Airy 三次相位
 phase.axicon = derived.axicon.krRadPerMm * (grid.sizeMm / 2 - grid.r); % axicon 径向线性相位，统一由解析后的 kr 决定
 
-phase.maxPropagationMm = (grid.sizeMm / 2) / tan(derived.axicon.coneAngleRad); % 几何近似下的最大无衍射传播距离
-phase.curvatureA = params.phase.curvedMaxShiftMm / (phase.maxPropagationMm ^ 2); % 抛物线轨迹 x = A z^2 中的曲率系数 A
-phase.curve = derived.kBackground * phase.curvatureA * (grid.r ./ tan(derived.axicon.coneAngleRad)) .* grid.x; % 让 Bessel 轨迹发生横向弯曲的相位项
+tanConeAngle = tan(derived.axicon.coneAngleRad);
+if tanConeAngle == 0
+    if params.phase.curvedMaxShiftMm ~= 0
+        error('curvedMaxShiftMm requires nonzero axicon beta because the curved-Bessel phase formula degenerates at beta = 0.');
+    end
+    phase.maxPropagationMm = Inf;
+    phase.curvatureA = 0;
+    phase.curve = zeros(size(grid.r));
+else
+    phase.maxPropagationMm = (grid.sizeMm / 2) / abs(tanConeAngle); % 几何近似下的最大无衍射传播距离
+    phase.curvatureA = params.phase.curvedMaxShiftMm / (phase.maxPropagationMm ^ 2); % 抛物线轨迹 x = A z^2 中的曲率系数 A
+    phase.curve = derived.kBackground * phase.curvatureA * (grid.r ./ abs(tanConeAngle)) .* grid.x; % 让 Bessel 轨迹发生横向弯曲的相位项
+end
 
 phase.compensation = params.phase.compensationPhase; % 保留额外补偿相位接口
 phase.vortex = params.phase.vortexCharge * grid.theta; % 标准涡旋相位 l*theta
@@ -444,16 +731,81 @@ phase.helical = params.phase.helicalGamma * cos( ... % helical 相位项，本�
 phase.all = phase.axicon + phase.airy + phase.vortex + phase.helical + phase.compensation + phase.curve; % 最终总相位
 end
 
-function propagation = localRunBpmPropagation(inputField, grid, params, derived)
+function propagation = localRunBpmPropagationForModes(inputModes, grid, params, derived)
+modeCount = numel(inputModes.modes);
+if ~inputModes.requiresIncoherentSum || modeCount == 1
+    propagation = localRunBpmPropagation(inputModes.modes(1).field, grid, params, derived);
+    propagation.intensityModel = derived.beam.qualityModel;
+    propagation.modeSummaries = inputModes.modeSummaries;
+    return;
+end
+
+localProgressWrite(params, sprintf('BPM M2 INCOHERENT HG START: beamQualityM2=%.12g, modes=%d, weights=%s', ...
+    derived.beam.qualityM2, numel(inputModes.modeSummaries), derived.beam.modeSummaryText), false);
+
+intensityStack = [];
+firstModeMetadata = [];
+for modeIndex = 1:modeCount
+    currentMode = inputModes.modes(modeIndex);
+    localProgressWrite(params, sprintf('BPM MODE START: mode=%d/%d, label=%s, weight=%.12g', ...
+        modeIndex, modeCount, currentMode.label, currentMode.weight), false);
+    modePropagation = localRunBpmPropagation(currentMode.field, grid, params, derived, modeIndex == 1);
+    modeIntensity = abs(modePropagation.E3D) .^ 2;
+    if isempty(intensityStack)
+        intensityStack = currentMode.weight * modeIntensity;
+        firstModeMetadata = struct( ...
+            'zValuesMm', modePropagation.zValuesMm, ...
+            'lens1AppliedAtMm', modePropagation.lens1AppliedAtMm, ...
+            'lens2AppliedAtMm', modePropagation.lens2AppliedAtMm, ...
+            'sampleAppliedAtMm', modePropagation.sampleAppliedAtMm);
+    else
+        intensityStack = intensityStack + currentMode.weight * modeIntensity;
+    end
+    localProgressWrite(params, sprintf('BPM MODE FINISHED: mode=%d/%d, label=%s', ...
+        modeIndex, modeCount, currentMode.label), false);
+    clear modePropagation modeIntensity;
+end
+
+propagation = struct();
+propagation.E3D = [];
+propagation.intensity3D = intensityStack;
+propagation.finalField = [];
+propagation.finalIntensity = intensityStack(:, :, end);
+propagation.zValuesMm = firstModeMetadata.zValuesMm;
+propagation.lens1AppliedAtMm = firstModeMetadata.lens1AppliedAtMm;
+propagation.lens2AppliedAtMm = firstModeMetadata.lens2AppliedAtMm;
+propagation.sampleAppliedAtMm = firstModeMetadata.sampleAppliedAtMm;
+propagation.intensityModel = derived.beam.qualityModel;
+propagation.modeSummaries = inputModes.modeSummaries;
+localProgressWrite(params, sprintf('BPM M2 INCOHERENT HG FINISHED: beamQualityM2=%.12g, modes=%d', ...
+    derived.beam.qualityM2, numel(inputModes.modeSummaries)), false);
+end
+
+function intensity3D = localGetPropagationIntensity(propagation)
+if isfield(propagation, 'intensity3D') && ~isempty(propagation.intensity3D)
+    intensity3D = propagation.intensity3D;
+elseif isfield(propagation, 'E3D') && ~isempty(propagation.E3D)
+    intensity3D = abs(propagation.E3D) .^ 2;
+else
+    error('Propagation result does not contain E3D or intensity3D.');
+end
+end
+
+function propagation = localRunBpmPropagation(inputField, grid, params, derived, resetProgressLog)
 % localRunBpmPropagation
 % 作用：用 FFT-BPM 方法，把输入场沿 z 方向一步一步传播。
 % 如果启用了 lens1 / lens2 / sample，就在对应 z 位置把它们插入传播链。
 
+if nargin < 5
+    resetProgressLog = true;
+end
+
 propagation = struct(); % 新建传播结果结构体
 
 if ~params.simulation.useBPM % 如果用户关闭了 BPM
-    message = sprintf('BPM OFF: z propagation was skipped. M=%.12g, M2=%.12g', derived.optics.M, derived.optics.M2); % 记录本次透镜缩放倍率
-    localProgressWrite(params, message, true); % 打印/记录一条状态信息；使用 ASCII 避免 VS Code 终端乱码
+    message = sprintf('BPM OFF: z propagation was skipped. M=%.12g, opticsM2=%.12g, beamM2=%.12g', ...
+        derived.optics.M, derived.optics.M2, derived.beam.qualityM2); % 记录本次透镜缩放倍率
+    localProgressWrite(params, message, resetProgressLog); % 打印/记录一条状态信息；使用 ASCII 避免 VS Code 终端乱码
     propagation.E3D = reshape(inputField, size(inputField, 1), size(inputField, 2), 1); % 仍然保存成 N x N x 1，保证后处理函数按三维栈读取
     propagation.finalField = inputField; % 最终场也等于输入场
     propagation.zValuesMm = 0; % z 方向只保留 0 这一个位置
@@ -480,7 +832,7 @@ lens1AppliedAtMm = NaN; % 记录第一片透镜到底在哪个 z 步被真正插
 lens2AppliedAtMm = NaN; % 记录第二片透镜真正插入的位置
 sampleAppliedAtMm = NaN; % 记录样品折射率真正开始生效的位置
 progressTimer = tic; % 为 BPM 主循环单独计时
-localProgressStart(params, numel(zValuesMm), derived); % 打印/记录 BPM 开始运行的信息
+localProgressStart(params, numel(zValuesMm), derived, resetProgressLog); % 打印/记录 BPM 开始运行的信息
 lastProgressTimeSeconds = -inf; % 记录上一次输出进度的时间；初值设为 -inf 保证第一步会输出
 
 initialZValueMm = zValuesMm(1); % 第一个切片是真正的输入平面 z=0
@@ -534,16 +886,25 @@ propagation.lens2AppliedAtMm = lens2AppliedAtMm; % 保存第二片透镜的实�
 propagation.sampleAppliedAtMm = sampleAppliedAtMm; % 保存样品开始生效的位置
 end
 
-function postprocess = localComputePostprocess(fieldStack, zValuesMm, grid, params, derived)
+function postprocess = localComputePostprocess(fieldOrIntensityStack, zValuesMm, grid, params, derived, stackIsIntensity)
 % localComputePostprocess
 % 作用：从三维复场中提取强度、功率密度、轴上曲线、对数图等后处理结果。
 % 注意：这里的功率密度标定仍然沿用了旧代码的“参考切片归一化”思路，
 % 它更适合作为相对比较和参考，不建议直接把它当作严格实验绝对值。
 
+if nargin < 6
+    stackIsIntensity = false;
+end
+if stackIsIntensity
+    intensityStack = fieldOrIntensityStack;
+else
+    intensityStack = abs(fieldOrIntensityStack) .^ 2;
+end
+
 postprocess = struct(); % 新建后处理结果结构体
 
-referenceSliceIndex = min(params.output.referenceSliceIndex, size(fieldStack, 3)); % 防止参考切片编号超过 z 切片总数
-referenceSlice = abs(fieldStack(:, :, referenceSliceIndex)) .^ 2; % 取参考 z 切片的强度分布
+referenceSliceIndex = min(params.output.referenceSliceIndex, size(intensityStack, 3)); % 防止参考切片编号超过 z 切片总数
+referenceSlice = intensityStack(:, :, referenceSliceIndex); % 取参考 z 切片的强度分布
 sumIntensity = sum(referenceSlice, 'all'); % 求参考切片上的总强度
 if sumIntensity <= 0 || ~isfinite(sumIntensity)
     error('Reference slice has zero or invalid total intensity.');
@@ -560,14 +921,14 @@ if isempty(centerRowIndex) || isempty(centerColumnIndex)
 end
 yImageMm = grid.yValuesMm; % y 方向显示坐标，与传播网格保持一致
 zImageMm = reshape(zValuesMm, 1, []); % z 方向显示坐标直接使用传播过程中的真实采样位置
-crossSectionIntensity = reshape(abs(fieldStack(:, centerColumnIndex, :)) .^ 2, params.simulation.N, []); % 固定 x=0，提取 y-z 中心截面
+crossSectionIntensity = reshape(intensityStack(:, centerColumnIndex, :), params.simulation.N, []); % 固定 x=0，提取 y-z 中心截面
 crossSectionPowerDensity = crossSectionIntensity .* pixelPowerDensityWPerMm2; % 把二维强度图换成功率密度图
 crossSectionPeakPowerDensity = crossSectionPowerDensity * derived.pulsePeakPowerW; % 再乘峰值功率，得到峰值功率密度估算
 onAxisPeakPowerDensity = crossSectionPeakPowerDensity(centerRowIndex, :); % 再取中心 y 位置，得到轴上峰值功率密度曲线
 
-slicePeakIntensity = zeros(1, size(fieldStack, 3)); % 每个 z 平面内真正的峰值强度，用于和 on-axis 曲线区分
-for sliceIndex = 1:size(fieldStack, 3)
-    currentIntensity = abs(fieldStack(:, :, sliceIndex)) .^ 2;
+slicePeakIntensity = zeros(1, size(intensityStack, 3)); % 每个 z 平面内真正的峰值强度，用于和 on-axis 曲线区分
+for sliceIndex = 1:size(intensityStack, 3)
+    currentIntensity = intensityStack(:, :, sliceIndex);
     slicePeakIntensity(sliceIndex) = max(currentIntensity(:));
 end
 slicePeakPowerDensity = slicePeakIntensity .* pixelPowerDensityWPerMm2 * derived.pulsePeakPowerW;
@@ -619,12 +980,12 @@ title('Phase on SLM (angle(E))'); % 图标题
 colorbar; % 显示颜色条
 
 nexttile; % 切到第 2 个子图
-imshow(abs(results.inputField) .^ 2, []); % 显示输入场强度
+imshow(results.inputIntensity, []); % 显示输入场强度
 title('input beam (|E|^2)'); % 图标题
 colorbar; % 显示颜色条
 
 nexttile; % 切到第 3 个子图
-imshow(abs(results.angularSpectrum) .^ 2, []); % 显示输入场角谱强度
+imshow(results.angularSpectrumIntensity, []); % 显示输入场角谱强度
 title('Angular spectrum (|F|^2)'); % 图标题
 colorbar; % 显示颜色条
 
@@ -743,12 +1104,17 @@ catch
 end
 end
 
-function localProgressStart(params, totalSteps, derived)
+function localProgressStart(params, totalSteps, derived, resetLog)
 % localProgressStart
 % 作用：在 BPM 主循环开始时输出一条清晰的起始信息。
 
-message = sprintf('BPM START: total_steps=%d, M=%.12g, M2=%.12g', totalSteps, derived.optics.M, derived.optics.M2); % 组合开始信息；使用 ASCII 避免 VS Code 终端乱码
-localProgressWrite(params, message, true); % 打印/显示开始信息
+if nargin < 4
+    resetLog = true;
+end
+
+message = sprintf('BPM START: total_steps=%d, M=%.12g, opticsM2=%.12g, beamM2=%.12g', ...
+    totalSteps, derived.optics.M, derived.optics.M2, derived.beam.qualityM2); % 组合开始信息；使用 ASCII 避免 VS Code 终端乱码
+localProgressWrite(params, message, resetLog); % 打印/显示开始信息
 end
 
 function [lastProgressTimeSeconds, didPrint] = localProgressUpdate(params, index, totalSteps, zValueMm, progressTimer, lastProgressTimeSeconds)
@@ -776,7 +1142,8 @@ function localProgressFinish(params, totalSteps, elapsedSeconds, derived)
 % localProgressFinish
 % 作用：在 BPM 主循环结束时输出一条完成信息。
 
-message = sprintf('BPM FINISHED: total_steps=%d, elapsed_s=%.2f, M=%.12g, M2=%.12g', totalSteps, elapsedSeconds, derived.optics.M, derived.optics.M2); % 组合完成信息；使用 ASCII 避免 VS Code 终端乱码
+message = sprintf('BPM FINISHED: total_steps=%d, elapsed_s=%.2f, M=%.12g, opticsM2=%.12g, beamM2=%.12g', ...
+    totalSteps, elapsedSeconds, derived.optics.M, derived.optics.M2, derived.beam.qualityM2); % 组合完成信息；使用 ASCII 避免 VS Code 终端乱码
 localProgressWrite(params, message, false); % 打印/追加写入日志
 end
 
@@ -843,7 +1210,7 @@ function localExport3DIntensity(results, params)
 % localExport3DIntensity
 % 作用：把三维强度归一化到 8-bit，并按 z 切片写入一个多页 tif 文件。
 
-intensity3D = abs(results.propagation.E3D) .^ 2; % 先把三维复场转成三维强度
+intensity3D = localGetPropagationIntensity(results.propagation); % 取出单场传播强度或 M2 模式混合后的总强度
 intensity3D = intensity3D - min(intensity3D(:)); % 把最小值平移到 0
 intensity3D = intensity3D / max(intensity3D(:)); % 再归一化到 [0, 1]
 intensity3D8Bit = uint8(intensity3D * 255); % 最后映射到 8-bit 灰度
@@ -1029,6 +1396,16 @@ switch mode
 end
 end
 
+function token = localBuildBeamQualityToken(params)
+model = char(string(params.beam.beamQualityModel));
+token = ['beamM2=', num2str(params.beam.beamQualityM2), ' model=', model];
+if strcmp(model, 'coherentHG')
+    token = [token, ...
+        ' phX=', localBuildAngleToken(params.beam.hgCoherentPhaseXDeg), ...
+        ' phY=', localBuildAngleToken(params.beam.hgCoherentPhaseYDeg)];
+end
+end
+
 function fileName = localBuild3DFileName(params)
 % localBuild3DFileName
 % 作用：按照当前参数生成 3D 强度 tif 的文件名。
@@ -1042,6 +1419,7 @@ fileName = ['Drill Beam 3D ', ... % 文件名前缀，标明这是 3D 强度
     ' helicalOffset=', localBuildAngleToken(params.phase.helicalPhaseOffset), ... % 写入 helical 相位偏置，避免不同 offset 的 3D 文件互相覆盖
     ' omega=', num2str(params.phase.omegaInner), ... % 写入 omega 参数
     ' w=', num2str(params.beam.waistRadiusMm), ... % 写入高斯束腰半径
+    ' ', localBuildBeamQualityToken(params), ... % 写入激光 beam-quality factor 和仿真模型，避免不同 M2 模型的 3D 结果互相覆盖
     '.tif']; % 文件扩展名
 end
 
