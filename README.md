@@ -31,15 +31,15 @@ The Phase tab now uses `axiconMode` to choose one active axicon definition:
 Internally, all modes are converted to one radial phase slope `k_r` and one effective cone angle before propagation.
 Inactive axicon fields are read-only equivalents and update in the app when the active definition changes.
 
-## Inner/Outer Vortex Phase
+## Checkerboard Bessel Vortex Phase
 
-The Phase tab also includes an extra inner/outer vortex term:
+The Phase tab includes an optional checkerboard-multiplexed Bessel vortex phase. Enable `checkerboardBesselEnabled`, then set:
 
-- `innerOuterVortexRadiusMm`: split radius `r`, in mm.
-- `innerOuterVortexTcIn` / `innerOuterVortexTcOut`: topological charges inside and outside `r`.
-- `innerOuterVortexBetaInDeg` / `innerOuterVortexBetaOutDeg`: holographic axicon beta values inside and outside `r`.
+- `checkerboardTileSizePx`: checkerboard tile size in generated phase-map pixels.
+- `checkerboardTc1` / `checkerboardTc2`: the two vortex topological charges.
+- `checkerboardBeta1Deg` / `checkerboardBeta2Deg`: the two axicon cone angles.
 
-All TC and beta defaults are `0`, so this extra term is disabled by default.
+Same-parity checkerboard tiles use beam 1, alternating tiles use beam 2.
 
 ## Install from Toolbox Package
 

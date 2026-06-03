@@ -95,11 +95,12 @@ classdef BPM_drill_AI_app < matlab.apps.AppBase
                 'curvedMaxShiftMm', 'curvedMaxShiftMm (mm)';
                 'compensationPhase', 'compensationPhase';
                 'vortexCharge', 'vortexCharge';
-                'innerOuterVortexRadiusMm', 'inner/outer r (mm)';
-                'innerOuterVortexTcIn', 'TC_in';
-                'innerOuterVortexTcOut', 'TC_out';
-                'innerOuterVortexBetaInDeg', 'Axicon beta_in (deg)';
-                'innerOuterVortexBetaOutDeg', 'Axicon beta_out (deg)';
+                'checkerboardBesselEnabled', 'Checkerboard Bessel';
+                'checkerboardTileSizePx', 'Checker tile (px)';
+                'checkerboardTc1', 'TC_1';
+                'checkerboardTc2', 'TC_2';
+                'checkerboardBeta1Deg', 'beta_1 (deg)';
+                'checkerboardBeta2Deg', 'beta_2 (deg)';
                 'helicalGamma', 'helicalGamma';
                 'helicalOrder', 'helicalOrder';
                 'helicalPhaseOffset', 'helicalPhaseOffset (deg)';
@@ -173,16 +174,18 @@ classdef BPM_drill_AI_app < matlab.apps.AppBase
             inputTab = uitab(rightTabs, 'Title', 'Input and phase');
             summaryTab = uitab(rightTabs, 'Title', 'Summary and log');
 
-            inputGrid = uigridlayout(inputTab, [2 3]);
+            inputGrid = uigridlayout(inputTab, [2 4]);
             inputGrid.Padding = [8 8 8 8];
             inputGrid.RowHeight = {'1x', '1x'};
-            inputGrid.ColumnWidth = {'1x', '1x', '1x'};
+            inputGrid.ColumnWidth = {'1x', '1x', '1x', '1x'};
             app.ResultAxes.slmPhase = app.addSquareAxes(inputGrid);
             app.ResultAxes.inputIntensity = app.addSquareAxes(inputGrid);
             app.ResultAxes.angularSpectrum = app.addSquareAxes(inputGrid);
+            app.ResultAxes.checkerboardBesselPhase = app.addSquareAxes(inputGrid);
             app.ResultAxes.helicalPhase = app.addSquareAxes(inputGrid);
             app.ResultAxes.axiconPhase = app.addSquareAxes(inputGrid);
             app.ResultAxes.vortexPhase = app.addSquareAxes(inputGrid);
+            app.ResultAxes.checkerboardMask = app.addSquareAxes(inputGrid);
 
             propagationGrid = uigridlayout(propagationTab, [3 1]);
             propagationGrid.Padding = [8 8 8 8];
@@ -527,6 +530,7 @@ classdef BPM_drill_AI_app < matlab.apps.AppBase
 
             integerFields = {
                 'simulation', 'N';
+                'phase', 'checkerboardTileSizePx';
                 'output', 'cropHalfWidthPixels';
                 'output', 'referenceSliceIndex'};
 
@@ -568,6 +572,14 @@ classdef BPM_drill_AI_app < matlab.apps.AppBase
             if params.phase.airyScaleMm == 0
                 error('params.phase.airyScaleMm must be nonzero.');
             end
+            if params.phase.checkerboardBesselEnabled
+                if params.phase.checkerboardTileSizePx < 1
+                    error('params.phase.checkerboardTileSizePx must be at least 1 when checkerboard Bessel phase is enabled.');
+                end
+                if abs(params.phase.checkerboardBeta1Deg) >= 90 || abs(params.phase.checkerboardBeta2Deg) >= 90
+                    error('Checkerboard Bessel beta_1 and beta_2 must be between -90 and 90 degrees.');
+                end
+            end
             if ~any(strcmp(params.phase.axiconMode, app.axiconModeOptions()))
                 error('params.phase.axiconMode must be coneAngle, radialPeriodMm, radialPeriodPx, or physicalEquivalent.');
             end
@@ -591,13 +603,6 @@ classdef BPM_drill_AI_app < matlab.apps.AppBase
                     if params.phase.axiconIndex <= 0
                         error('Axicon refractive index must be positive.');
                     end
-            end
-            if params.phase.innerOuterVortexRadiusMm < 0
-                error('params.phase.innerOuterVortexRadiusMm must be nonnegative.');
-            end
-            if abs(params.phase.innerOuterVortexBetaInDeg) >= 90 || ...
-                    abs(params.phase.innerOuterVortexBetaOutDeg) >= 90
-                error('Inner/outer vortex beta values must be between -90 and 90 degrees.');
             end
             if params.optics.lens1FocalLengthMm <= 0 || params.optics.lens2FocalLengthMm <= 0
                 error('Lens focal lengths must be positive.');
@@ -649,9 +654,11 @@ classdef BPM_drill_AI_app < matlab.apps.AppBase
             app.showImage(app.ResultAxes.slmPhase, angle(results.inputField), 'Phase on SLM');
             app.showImage(app.ResultAxes.inputIntensity, app.resultInputIntensity(results), 'Input beam |E|^2');
             app.showImage(app.ResultAxes.angularSpectrum, app.resultAngularSpectrumIntensity(results), 'Angular spectrum |F|^2');
+            app.showImage(app.ResultAxes.checkerboardBesselPhase, angle(exp(1i * results.phase.checkerboardBessel)), 'Checker Bessel phase');
             app.showImage(app.ResultAxes.helicalPhase, results.phase.helical, 'Helical phase');
             app.showImage(app.ResultAxes.axiconPhase, angle(exp(1i * results.phase.axicon)), 'Axicon phase');
-            app.showImage(app.ResultAxes.vortexPhase, angle(exp(1i * results.phase.vortexAll)), 'Vortex phase (all)');
+            app.showImage(app.ResultAxes.vortexPhase, angle(exp(1i * results.phase.vortex)), 'Vortex phase');
+            app.showImage(app.ResultAxes.checkerboardMask, double(results.phase.checkerboardMask), 'Checker mask');
 
             app.showCrossSection(app.ResultAxes.peakLog, ...
                 results.postprocess.zImageMm, ...
@@ -799,15 +806,13 @@ classdef BPM_drill_AI_app < matlab.apps.AppBase
                     results.derived.axicon.radialPeriodMm, results.derived.axicon.radialPeriodPx);
                 sprintf('Physical-equivalent fields: n=%.12g, alpha=%.12g deg', ...
                     results.derived.axicon.physicalIndex, results.derived.axicon.physicalBaseAngleDeg);
-                sprintf('Inner/outer vortex: r=%.12g mm, TC_in=%.12g, TC_out=%.12g', ...
-                    results.derived.innerOuterVortex.radiusMm, ...
-                    results.derived.innerOuterVortex.tcIn, ...
-                    results.derived.innerOuterVortex.tcOut);
-                sprintf('Inner/outer axicon beta: in=%.12g deg (kr=%.12g), out=%.12g deg (kr=%.12g)', ...
-                    results.derived.innerOuterVortex.betaInDeg, ...
-                    results.derived.innerOuterVortex.krInRadPerMm, ...
-                    results.derived.innerOuterVortex.betaOutDeg, ...
-                    results.derived.innerOuterVortex.krOutRadPerMm);
+                sprintf('Checkerboard Bessel: enabled=%d, tile=%d px, TC1=%.12g, beta1=%.12g deg, TC2=%.12g, beta2=%.12g deg', ...
+                    results.params.phase.checkerboardBesselEnabled, ...
+                    results.params.phase.checkerboardTileSizePx, ...
+                    results.params.phase.checkerboardTc1, ...
+                    results.params.phase.checkerboardBeta1Deg, ...
+                    results.params.phase.checkerboardTc2, ...
+                    results.params.phase.checkerboardBeta2Deg);
                 sprintf('Z slices: %d', numel(results.propagation.zValuesMm));
                 sprintf('Pulse peak power: %.12g W', results.derived.pulsePeakPowerW);
                 sprintf('Laser beam M2: %.12g, model: %s (%s)', ...
@@ -1386,16 +1391,18 @@ classdef BPM_drill_AI_app < matlab.apps.AppBase
                     description = 'Extra compensation phase hook. It is currently applied as an additional global phase term.';
                 case 'phase.vortexCharge'
                     description = 'Topological charge l for the vortex phase. Set to 0 to disable the vortex phase.';
-                case 'phase.innerOuterVortexRadiusMm'
-                    description = 'Radius r, in mm, that splits the extra inner/outer vortex phase. Pixels with radius <= r use the inner values.';
-                case 'phase.innerOuterVortexTcIn'
-                    description = 'Topological charge TC_in applied inside radius r for the extra inner/outer vortex phase. Set to 0 to disable the inner vortex term.';
-                case 'phase.innerOuterVortexTcOut'
-                    description = 'Topological charge TC_out applied outside radius r for the extra inner/outer vortex phase. Set to 0 to disable the outer vortex term.';
-                case 'phase.innerOuterVortexBetaInDeg'
-                    description = 'Signed holographic axicon cone angle beta_in, in degrees, applied inside radius r. Set to 0 to disable the inner axicon term.';
-                case 'phase.innerOuterVortexBetaOutDeg'
-                    description = 'Signed holographic axicon cone angle beta_out, in degrees, applied outside radius r. Set to 0 to disable the outer axicon term.';
+                case 'phase.checkerboardBesselEnabled'
+                    description = 'Adds a checkerboard-multiplexed Bessel vortex phase built from two TC/beta definitions.';
+                case 'phase.checkerboardTileSizePx'
+                    description = 'Checkerboard tile width in generated phase-map pixels. Same-parity tiles use beam 1; alternating tiles use beam 2.';
+                case 'phase.checkerboardTc1'
+                    description = 'Topological charge TC_1 for checkerboard Bessel vortex beam 1.';
+                case 'phase.checkerboardTc2'
+                    description = 'Topological charge TC_2 for checkerboard Bessel vortex beam 2.';
+                case 'phase.checkerboardBeta1Deg'
+                    description = 'Axicon cone angle beta_1, in degrees, for checkerboard Bessel vortex beam 1.';
+                case 'phase.checkerboardBeta2Deg'
+                    description = 'Axicon cone angle beta_2, in degrees, for checkerboard Bessel vortex beam 2.';
                 case 'phase.helicalGamma'
                     description = 'Modulation depth of the helical phase term. This controls the strength of the helical contribution.';
                 case 'phase.helicalOrder'

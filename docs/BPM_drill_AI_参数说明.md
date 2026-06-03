@@ -15,7 +15,7 @@
 最常改的通常是这几类：
 
 1. `params.phase`
-   这里决定输出光束长什么样，尤其是 `axiconMode` 及其当前主参数、`vortexCharge`、内外圈 vortex 参数、`helicalGamma`、`helicalOrder`、`omegaInner`、`omegaOuter`。
+   这里决定输出光束长什么样，尤其是 `axiconMode` 及其当前主参数、`vortexCharge`、棋盘 Bessel vortex 参数、`helicalGamma`、`helicalOrder`、`omegaInner`、`omegaOuter`。
 2. `params.simulation`
    这里决定仿真精度和计算量，尤其是 `N`、`zRangeMm`、`dzMm`。
 3. `params.output`
@@ -276,31 +276,42 @@ run('C:/Users/Shan/Desktop/academic/drill-beam-matlab/src/BPM_drill_AI.m');
 - 直接影响：
   输出的中空程度、螺旋结构特征。
 
-#### `innerOuterVortexRadiusMm`
+#### `checkerboardBesselEnabled`
 
-- 含义：额外“内外圈 vortex”相位的分界半径 `r`，单位 mm。
-- 生效方式：
-  半径 `grid.r <= r` 的像素使用内圈参数，半径 `grid.r > r` 的像素使用外圈参数。
-- 默认值：
-  为 `1` mm。由于默认 `TC_in`、`TC_out`、`beta_in`、`beta_out` 都是 `0`，这个额外相位默认不改变总相位。
+- 含义：是否启用棋盘式双 Bessel vortex 相位。
+- 关闭时：
+  该相位项为 0，原来的 axicon / vortex / helical 等逻辑不变。
+- 开启时：
+  程序会生成两束 Bessel vortex 相位：
+  `phase_1 = k sin(beta_1) * (R - r) + TC_1 * theta`，
+  `phase_2 = k sin(beta_2) * (R - r) + TC_2 * theta`，
+  然后按棋盘格 mask 在二维相位图中选择对应位置的 `phase_1` 或 `phase_2`。
+- 棋盘规则：
+  同奇偶格子使用 beam 1，即 odd-odd 和 even-even；交替格子使用 beam 2，即 odd-even 和 even-odd。
 
-#### `innerOuterVortexTcIn` / `innerOuterVortexTcOut`
+#### `checkerboardTileSizePx`
 
-- 含义：内圈和外圈的额外 vortex 拓扑荷数，分别对应 `TC_in` 和 `TC_out`。
-- 生效公式：
-  内圈叠加 `TC_in * theta`，外圈叠加 `TC_out * theta`。
-- 默认值：
-  都是 `0`，表示不添加这个额外 vortex 项。
+- 含义：棋盘格边长，单位是生成相位图的像素。
+- 调大后：
+  每个区域更大，beam 1 / beam 2 的切换更少。
+- 调小后：
+  切换更密，棋盘 multiplexing 更细。
+- 常见风险：
+  太小会导致强烈像素级相位跳变；太大则只剩少量区域交替。
 
-#### `innerOuterVortexBetaInDeg` / `innerOuterVortexBetaOutDeg`
+#### `checkerboardTc1` / `checkerboardTc2`
 
-- 含义：内圈和外圈的额外全息 axicon 有效锥角，分别对应 `beta_in` 和 `beta_out`，单位度。
-- 生效公式：
-  程序会把 `beta_in/out` 转成径向波矢 `k_r = k * sin(beta)`，再分别叠加到内圈和外圈。
-- 默认值：
-  都是 `0`，表示不添加这个额外 axicon 项。
-- 注意：
-  这是一项额外相位，会和全局 `axiconMode` 解析出来的 axicon 相位、全局 `vortexCharge` 相位一起叠加。
+- 含义：棋盘 beam 1 / beam 2 的 vortex 拓扑荷数。
+- 用法：
+  例如 `checkerboardTc1 = 1`、`checkerboardTc2 = -1` 会在棋盘格中交替使用相反手性的 vortex 相位。
+
+#### `checkerboardBeta1Deg` / `checkerboardBeta2Deg`
+
+- 含义：棋盘 beam 1 / beam 2 的 axicon cone angle `beta_1` / `beta_2`，单位是度。
+- 用法：
+  二者可以相同，只改变 TC；也可以不同，同时改变 Bessel cone angle。
+- 限制：
+  必须在 `-90` 到 `90` 度之间。
 
 #### `helicalGamma`
 
@@ -589,9 +600,10 @@ run('C:/Users/Shan/Desktop/academic/drill-beam-matlab/src/BPM_drill_AI.m');
 - `helicalOrder`
 - `omegaInner`
 - `omegaOuter`
-- `innerOuterVortexRadiusMm`
-- `innerOuterVortexTcIn` / `innerOuterVortexTcOut`
-- `innerOuterVortexBetaInDeg` / `innerOuterVortexBetaOutDeg`
+- `checkerboardBesselEnabled`
+- `checkerboardTileSizePx`
+- `checkerboardTc1` / `checkerboardTc2`
+- `checkerboardBeta1Deg` / `checkerboardBeta2Deg`
 - `axiconMode`
 - `axiconConeAngleDeg` / `axiconRadialPeriodMm` / `axiconRadialPeriodPx`
 
