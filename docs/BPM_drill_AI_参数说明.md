@@ -246,13 +246,13 @@ run('C:/Users/Shan/Desktop/academic/drill-beam-matlab/src/BPM_drill_AI.m');
   新版本里 `phase.axicon` 不再直接使用 `axiconAngleDeg`；
   它会先换算成有效锥角 `beta` 和径向波矢 `k_r`。
 
-#### `curvedMaxShiftMm`
+#### `curvedMaxShiftXMm` / `curvedMaxShiftYMm`
 
-- 含义：曲线 Bessel 设计中，末端期望横向偏移量。
+- 含义：曲线 Bessel 设计中，末端期望横向偏移量，分别控制 x / y 方向。
 - 调大后：
-  曲线轨迹偏转更明显。
+  对应方向的曲线轨迹偏转更明显；两个方向都非零时，轨迹会沿合成方向偏转。
 - 调小后：
-  弯曲减弱；设为 `0` 时回到不弯曲。
+  对应方向的弯曲减弱；两个参数都设为 `0` 时回到不弯曲。
 - 常见风险：
   过大时可能得到很强的非对称结构。
 

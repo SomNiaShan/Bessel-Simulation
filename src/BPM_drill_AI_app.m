@@ -92,7 +92,8 @@ classdef BPM_drill_AI_app < matlab.apps.AppBase
                 'axiconRadialPeriodPx', 'Radial period (px)';
                 'axiconIndex', 'Axicon refractive index (n)';
                 'axiconAngleDeg', 'Physical base angle alpha (deg)';
-                'curvedMaxShiftMm', 'curvedMaxShiftMm (mm)';
+                'curvedMaxShiftXMm', 'curvedMaxShiftX (mm)';
+                'curvedMaxShiftYMm', 'curvedMaxShiftY (mm)';
                 'compensationPhase', 'compensationPhase';
                 'vortexCharge', 'vortexCharge';
                 'checkerboardBesselEnabled', 'Checkerboard Bessel';
@@ -293,7 +294,9 @@ classdef BPM_drill_AI_app < matlab.apps.AppBase
                     control = uieditfield(grid, 'numeric', 'Value', double(displayValue), 'Tooltip', tooltip);
                     control.ValueDisplayFormat = '%.12g';
                 end
-                if app.isAxiconSyncControl(groupName, fieldName) && ...
+                if strcmp(groupName, 'phase') && strcmp(fieldName, 'checkerboardBesselEnabled')
+                    control.ValueChangedFcn = @(~, ~)app.checkerboardBesselEnabledChanged();
+                elseif app.isAxiconSyncControl(groupName, fieldName) && ...
                         ~(strcmp(groupName, 'phase') && strcmp(fieldName, 'axiconMode'))
                     control.ValueChangedFcn = @(~, ~)app.axiconParameterChanged();
                 elseif app.isBeamExplanationControl(groupName, fieldName) && ...
@@ -648,6 +651,7 @@ classdef BPM_drill_AI_app < matlab.apps.AppBase
             app.updateBeamQualityDescription();
             app.updateAxiconControlStates();
             app.syncAxiconEquivalentControls();
+            app.updateCheckerboardBesselControlStates();
         end
 
         function updateResultPreview(app, results)
@@ -1142,6 +1146,36 @@ classdef BPM_drill_AI_app < matlab.apps.AppBase
             app.syncAxiconEquivalentControls();
         end
 
+        function checkerboardBesselEnabledChanged(app)
+            app.updateCheckerboardBesselControlStates();
+            enabledKey = app.controlKey('phase', 'checkerboardBesselEnabled');
+            if isfield(app.Controls, enabledKey)
+                app.appendStatus(sprintf('Checkerboard Bessel enabled: %d', ...
+                    logical(app.Controls.(enabledKey).Value)));
+            end
+        end
+
+        function updateCheckerboardBesselControlStates(app)
+            enabledKey = app.controlKey('phase', 'checkerboardBesselEnabled');
+            if ~isfield(app.Controls, enabledKey)
+                return;
+            end
+
+            controlEnable = 'off';
+            if logical(app.Controls.(enabledKey).Value)
+                controlEnable = 'on';
+            end
+
+            checkerboardFields = {'checkerboardTileSizePx', 'checkerboardTc1', ...
+                'checkerboardTc2', 'checkerboardBeta1Deg', 'checkerboardBeta2Deg'};
+            for index = 1:numel(checkerboardFields)
+                key = app.controlKey('phase', checkerboardFields{index});
+                if isfield(app.Controls, key)
+                    app.Controls.(key).Enable = controlEnable;
+                end
+            end
+        end
+
         function updateAxiconControlStates(app)
             modeKey = app.controlKey('phase', 'axiconMode');
             if ~isfield(app.Controls, modeKey)
@@ -1385,8 +1419,10 @@ classdef BPM_drill_AI_app < matlab.apps.AppBase
                     description = 'Refractive index of the equivalent physical axicon. Active only when axiconMode is physicalEquivalent.';
                 case 'phase.axiconAngleDeg'
                     description = 'Base angle alpha of the equivalent physical axicon, in degrees. Active only when axiconMode is physicalEquivalent.';
-                case 'phase.curvedMaxShiftMm'
-                    description = 'Target lateral shift at the end of the curved Bessel trajectory. Set to 0 to disable it; nonzero values require beta not equal to 0.';
+                case 'phase.curvedMaxShiftXMm'
+                    description = 'Target x-direction lateral shift at the end of the curved Bessel trajectory. Set x and y shifts to 0 to disable it; nonzero values require beta not equal to 0.';
+                case 'phase.curvedMaxShiftYMm'
+                    description = 'Target y-direction lateral shift at the end of the curved Bessel trajectory. Set x and y shifts to 0 to disable it; nonzero values require beta not equal to 0.';
                 case 'phase.compensationPhase'
                     description = 'Extra compensation phase hook. It is currently applied as an additional global phase term.';
                 case 'phase.vortexCharge'

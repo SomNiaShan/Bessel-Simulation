@@ -119,10 +119,10 @@ params.laser = struct( ... % 与激光源自身有关的参数
     'pulseWidthS', 275e-15); % 脉宽，单位 s
 
 params.beam = struct( ... % 与入射光束横向包络有关的参数
-    'waistRadiusMm', 3.85 / 2, ... % 高斯光束腰半径，单位 mm
+    'waistRadiusMm', 2, ... % 高斯光束腰半径，单位 mm
     'fieldAmplitude', 1, ... % 输入场的幅值系数
     'beamQualityM2', 1.2, ... % Laser beam-quality factor M^2; 1 is ideal Gaussian.
-    'beamQualityModel', 'incoherentHG', ... % effectiveGaussian / coherentHG / incoherentHG
+    'beamQualityModel', 'effectiveGaussian', ... % effectiveGaussian / coherentHG / incoherentHG
     'hgCoherentPhaseXDeg', 0, ... % Relative phase for HGn0 terms when beamQualityModel is coherentHG.
     'hgCoherentPhaseYDeg', 0); % Relative phase for HG0n terms when beamQualityModel is coherentHG.
 
@@ -135,7 +135,8 @@ params.phase = struct( ... % 与相位构造有关的参数
     'axiconRadialPeriodPx', 17.1878703686153, ... % SLM 径向 2pi 相位周期，单位为当前仿真像素
     'axiconIndex', 1.4287, ... % axicon 材料折射率
     'axiconAngleDeg', 1, ... % axicon 底角，单位度
-    'curvedMaxShiftMm', 0, ... % 曲线 Bessel 末端期望横向偏移量，单位 mm
+    'curvedMaxShiftXMm', 0, ... % 曲线 Bessel 末端期望 x 方向横向偏移量，单位 mm
+    'curvedMaxShiftYMm', 0, ... % 曲线 Bessel 末端期望 y 方向横向偏移量，单位 mm
     'compensationPhase', 0, ... % 额外补偿相位，目前默认关闭
     'vortexCharge', 0, ... % 涡旋相位的拓扑荷数 l
     'checkerboardBesselEnabled', false, ... % Enable checkerboard-multiplexed Bessel vortex phase.
@@ -258,8 +259,22 @@ if isfield(overrides, 'optics') && isstruct(overrides.optics) && ...
     overrides.optics.samplePositionMm = lens2PositionMm + overrides.optics.sampleOffsetFromLens2Mm;
 end
 
+overrides = localNormalizeLegacyCurvedShiftOverrides(overrides); % 兼容旧脚本里 curvedMaxShiftMm 只控制 x 方向的用法
 overrides = localNormalizeLegacyAxiconOverrides(overrides); % 兼容旧脚本里只覆盖 axiconAngleDeg/axiconIndex 的用法
 params = localMergeStructs(params, overrides); % 真正执行结构体递归合并
+end
+
+function overrides = localNormalizeLegacyCurvedShiftOverrides(overrides)
+if ~isfield(overrides, 'phase') || ~isstruct(overrides.phase)
+    return;
+end
+
+if isfield(overrides.phase, 'curvedMaxShiftMm')
+    if ~isfield(overrides.phase, 'curvedMaxShiftXMm')
+        overrides.phase.curvedMaxShiftXMm = overrides.phase.curvedMaxShiftMm;
+    end
+    overrides.phase = rmfield(overrides.phase, 'curvedMaxShiftMm');
+end
 end
 
 function overrides = localNormalizeLegacyAxiconOverrides(overrides)
@@ -765,16 +780,19 @@ phase.axicon = derived.axicon.krRadPerMm * (grid.sizeMm / 2 - grid.r); % axicon 
 
 tanConeAngle = tan(derived.axicon.coneAngleRad);
 if tanConeAngle == 0
-    if params.phase.curvedMaxShiftMm ~= 0
-        error('curvedMaxShiftMm requires nonzero axicon beta because the curved-Bessel phase formula degenerates at beta = 0.');
+    if params.phase.curvedMaxShiftXMm ~= 0 || params.phase.curvedMaxShiftYMm ~= 0
+        error('curvedMaxShiftXMm/curvedMaxShiftYMm require nonzero axicon beta because the curved-Bessel phase formula degenerates at beta = 0.');
     end
     phase.maxPropagationMm = Inf;
-    phase.curvatureA = 0;
+    phase.curvatureAX = 0;
+    phase.curvatureAY = 0;
     phase.curve = zeros(size(grid.r));
 else
     phase.maxPropagationMm = (grid.sizeMm / 2) / abs(tanConeAngle); % 几何近似下的最大无衍射传播距离
-    phase.curvatureA = params.phase.curvedMaxShiftMm / (phase.maxPropagationMm ^ 2); % 抛物线轨迹 x = A z^2 中的曲率系数 A
-    phase.curve = derived.kBackground * phase.curvatureA * (grid.r ./ abs(tanConeAngle)) .* grid.x; % 让 Bessel 轨迹发生横向弯曲的相位项
+    phase.curvatureAX = params.phase.curvedMaxShiftXMm / (phase.maxPropagationMm ^ 2); % 抛物线轨迹 x = A_x z^2 中的曲率系数
+    phase.curvatureAY = params.phase.curvedMaxShiftYMm / (phase.maxPropagationMm ^ 2); % 抛物线轨迹 y = A_y z^2 中的曲率系数
+    phase.curve = derived.kBackground * (grid.r ./ abs(tanConeAngle)) .* ...
+        (phase.curvatureAX .* grid.x + phase.curvatureAY .* grid.y); % 让 Bessel 轨迹发生二维横向弯曲的相位项
 end
 
 phase.compensation = params.phase.compensationPhase; % 保留额外补偿相位接口
@@ -1498,6 +1516,16 @@ token = [' checkerBessel tile=', num2str(params.phase.checkerboardTileSizePx), '
     ' beta2=', num2str(params.phase.checkerboardBeta2Deg), 'deg'];
 end
 
+function token = localBuildCurvedShiftToken(params)
+if params.phase.curvedMaxShiftXMm == 0 && params.phase.curvedMaxShiftYMm == 0
+    token = '';
+    return;
+end
+
+token = [' curveShift x=', num2str(params.phase.curvedMaxShiftXMm), 'mm', ...
+    ' y=', num2str(params.phase.curvedMaxShiftYMm), 'mm'];
+end
+
 function token = localBuildBeamQualityToken(params)
 model = char(string(params.beam.beamQualityModel));
 token = ['beamM2=', num2str(params.beam.beamQualityM2), ' model=', model];
@@ -1517,6 +1545,7 @@ fileName = ['Drill Beam 3D ', ... % 文件名前缀，标明这是 3D 强度
     localBuildAxiconDefinitionToken(params), ... % 写入当前 axicon 定义
     ' lc=', num2str(params.phase.vortexCharge), ... % 写入涡旋拓扑荷
     localBuildCheckerboardBesselToken(params), ... % 写入棋盘 Bessel vortex 参数
+    localBuildCurvedShiftToken(params), ... % 写入曲线 Bessel 的 x/y 末端偏移量
     ' gamma=', num2str(params.phase.helicalGamma), ... % 写入 helical 调制度
     ' m=', num2str(params.phase.helicalOrder), ... % 写入 helical 阶数
     ' helicalOffset=', localBuildAngleToken(params.phase.helicalPhaseOffset), ... % 写入 helical 相位偏置，避免不同 offset 的 3D 文件互相覆盖
@@ -1535,6 +1564,7 @@ fileName = ['Drill Beam SLM phase ', ... % 文件名前缀，标明这是总 SLM
     localBuildAxiconDefinitionToken(params), ... % 写入当前 axicon 定义
     ' lc=', num2str(params.phase.vortexCharge), ... % 写入涡旋拓扑荷
     localBuildCheckerboardBesselToken(params), ... % 写入棋盘 Bessel vortex 参数
+    localBuildCurvedShiftToken(params), ... % 写入曲线 Bessel 的 x/y 末端偏移量
     ' gamma=', num2str(params.phase.helicalGamma), ... % 写入 helical 调制度
     ' m=', num2str(params.phase.helicalOrder), ... % 写入 helical 阶数
     ' omega=', num2str(params.phase.omegaInner), ... % 写入 omega 参数
@@ -1551,6 +1581,7 @@ fileName = ['Drill Beam Helical phase ', ... % 文件名前缀，标明这是 he
     localBuildAxiconDefinitionToken(params), ... % 写入当前 axicon 定义
     ' lc=', num2str(params.phase.vortexCharge), ... % 写入涡旋拓扑荷
     localBuildCheckerboardBesselToken(params), ... % 写入棋盘 Bessel vortex 参数
+    localBuildCurvedShiftToken(params), ... % 写入曲线 Bessel 的 x/y 末端偏移量
     ' gamma=', num2str(params.phase.helicalGamma), ... % 写入 helical 调制度
     ' m=', num2str(params.phase.helicalOrder), ... % 写入 helical 阶数
     ' omega=', num2str(params.phase.omegaInner), ... % 写入 omega 参数
@@ -1568,6 +1599,7 @@ fileName = ['Drill Beam SLM phase helicalOffset ', offsetToken, ' ', ... % 文�
     localBuildAxiconDefinitionToken(params), ... % 写入当前 axicon 定义
     ' lc=', num2str(params.phase.vortexCharge), ... % 写入涡旋拓扑荷
     localBuildCheckerboardBesselToken(params), ... % 写入棋盘 Bessel vortex 参数
+    localBuildCurvedShiftToken(params), ... % 写入曲线 Bessel 的 x/y 末端偏移量
     ' gamma=', num2str(params.phase.helicalGamma), ... % 写入 helical 调制度
     ' m=', num2str(params.phase.helicalOrder), ... % 写入 helical 阶数
     ' omega=', num2str(params.phase.omegaInner), ... % 写入 omega 参数
@@ -1591,6 +1623,7 @@ fileName = ['Drill Beam SLM phase rotated ', directionToken, ' ', angleToken, ' 
     localBuildAxiconDefinitionToken(params), ... % 写入当前 axicon 定义
     ' lc=', num2str(params.phase.vortexCharge), ... % 写入涡旋拓扑荷
     localBuildCheckerboardBesselToken(params), ... % 写入棋盘 Bessel vortex 参数
+    localBuildCurvedShiftToken(params), ... % 写入曲线 Bessel 的 x/y 末端偏移量
     ' gamma=', num2str(params.phase.helicalGamma), ... % 写入 helical 调制度
     ' m=', num2str(params.phase.helicalOrder), ... % 写入 helical 阶数
     ' omega=', num2str(params.phase.omegaInner), ... % 写入 omega 参数
