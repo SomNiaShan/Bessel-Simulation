@@ -26,6 +26,7 @@ The Phase tab now uses `axiconMode` to choose one active axicon definition:
 - `coneAngle`: edit the effective holographic cone angle `beta`.
 - `radialPeriodMm`: edit the radial `2*pi` SLM phase period in mm.
 - `radialPeriodPx`: edit the radial `2*pi` period in generated phase-map pixels.
+- `radialCycles`: edit the number of radial `2*pi` axicon phase cycles from the beam axis to the normalized radius `rho = 1`.
 - `physicalEquivalent`: edit an equivalent physical axicon refractive index and base angle.
 
 Internally, all modes are converted to one radial phase slope `k_r` and one effective cone angle before propagation.

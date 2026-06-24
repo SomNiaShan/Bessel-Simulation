@@ -90,6 +90,7 @@ classdef Bessel_Simulation_app < matlab.apps.AppBase
                 'axiconConeAngleDeg', 'Cone angle beta (deg)';
                 'axiconRadialPeriodMm', 'Radial period (mm)';
                 'axiconRadialPeriodPx', 'Radial period (px)';
+                'axiconRadialCycles', 'Radial cycles (rho)';
                 'axiconIndex', 'Axicon refractive index (n)';
                 'axiconAngleDeg', 'Physical base angle alpha (deg)';
                 'curvedMaxShiftXMm', 'curvedMaxShiftX (mm)';
@@ -584,7 +585,7 @@ classdef Bessel_Simulation_app < matlab.apps.AppBase
                 end
             end
             if ~any(strcmp(params.phase.axiconMode, app.axiconModeOptions()))
-                error('params.phase.axiconMode must be coneAngle, radialPeriodMm, radialPeriodPx, or physicalEquivalent.');
+                error('params.phase.axiconMode must be coneAngle, radialPeriodMm, radialPeriodPx, radialCycles, or physicalEquivalent.');
             end
             if params.material.backgroundIndex <= 0 || params.material.sampleIndex <= 0
                 error('Material refractive indices must be positive.');
@@ -601,6 +602,10 @@ classdef Bessel_Simulation_app < matlab.apps.AppBase
                 case 'radialPeriodPx'
                     if params.phase.axiconRadialPeriodPx == 0
                         error('Axicon radial period in pixels must be nonzero. Use Inf for beta = 0.');
+                    end
+                case 'radialCycles'
+                    if ~isfinite(params.phase.axiconRadialCycles)
+                        error('Axicon radial cycles must be finite. Use 0 for beta = 0.');
                     end
                 case 'physicalEquivalent'
                     if params.phase.axiconIndex <= 0
@@ -808,6 +813,8 @@ classdef Bessel_Simulation_app < matlab.apps.AppBase
                     results.derived.axicon.coneAngleDeg, results.derived.axicon.krRadPerMm);
                 sprintf('Axicon radial period: %.12g mm (%.12g px)', ...
                     results.derived.axicon.radialPeriodMm, results.derived.axicon.radialPeriodPx);
+                sprintf('Axicon radial cycles center-to-edge: %.12g', ...
+                    results.derived.axicon.radialCycles);
                 sprintf('Physical-equivalent fields: n=%.12g, alpha=%.12g deg', ...
                     results.derived.axicon.physicalIndex, results.derived.axicon.physicalBaseAngleDeg);
                 sprintf('Checkerboard Bessel: enabled=%d, tile=%d px, TC1=%.12g, beta1=%.12g deg, TC2=%.12g, beta2=%.12g deg', ...
@@ -1184,7 +1191,8 @@ classdef Bessel_Simulation_app < matlab.apps.AppBase
 
             mode = char(string(app.Controls.(modeKey).Value));
             axiconFields = {'axiconConeAngleDeg', 'axiconRadialPeriodMm', ...
-                'axiconRadialPeriodPx', 'axiconIndex', 'axiconAngleDeg'};
+                'axiconRadialPeriodPx', 'axiconRadialCycles', ...
+                'axiconIndex', 'axiconAngleDeg'};
             for index = 1:numel(axiconFields)
                 key = app.controlKey('phase', axiconFields{index});
                 if isfield(app.Controls, key)
@@ -1199,6 +1207,8 @@ classdef Bessel_Simulation_app < matlab.apps.AppBase
                     activeFields = {'axiconRadialPeriodMm'};
                 case 'radialPeriodPx'
                     activeFields = {'axiconRadialPeriodPx'};
+                case 'radialCycles'
+                    activeFields = {'axiconRadialCycles'};
                 case 'physicalEquivalent'
                     activeFields = {'axiconIndex', 'axiconAngleDeg'};
                 otherwise
@@ -1222,6 +1232,7 @@ classdef Bessel_Simulation_app < matlab.apps.AppBase
                 app.controlKey('phase', 'axiconConeAngleDeg');
                 app.controlKey('phase', 'axiconRadialPeriodMm');
                 app.controlKey('phase', 'axiconRadialPeriodPx');
+                app.controlKey('phase', 'axiconRadialCycles');
                 app.controlKey('phase', 'axiconIndex');
                 app.controlKey('phase', 'axiconAngleDeg');
                 app.controlKey('simulation', 'N');
@@ -1250,8 +1261,9 @@ classdef Bessel_Simulation_app < matlab.apps.AppBase
                 end
 
                 gridPixelPitchMm = gridSizeMm / sampleCount;
+                gridRadiusMm = gridSizeMm / 2;
                 kBackground = 2 * pi * backgroundIndex / wavelengthMm;
-                [coneAngleRad, krRadPerMm] = app.resolveAxiconControlsToConeAndKr(mode, kBackground, gridPixelPitchMm);
+                [coneAngleRad, krRadPerMm] = app.resolveAxiconControlsToConeAndKr(mode, kBackground, gridPixelPitchMm, gridRadiusMm);
                 if ~isfinite(coneAngleRad) || ~isfinite(krRadPerMm) || ...
                         abs(coneAngleRad) >= pi / 2 || ...
                         abs(krRadPerMm) >= kBackground
@@ -1261,11 +1273,13 @@ classdef Bessel_Simulation_app < matlab.apps.AppBase
                 coneAngleDeg = rad2deg(coneAngleRad);
                 radialPeriodMm = 2 * pi / krRadPerMm;
                 radialPeriodPx = radialPeriodMm / gridPixelPitchMm;
+                radialCycles = krRadPerMm * gridRadiusMm / (2 * pi);
                 physicalBaseAngleDeg = app.equivalentPhysicalBaseAngleDeg(coneAngleRad, axiconIndex, backgroundIndex);
 
                 app.setAxiconEquivalentValue('axiconConeAngleDeg', coneAngleDeg, mode, 'coneAngle');
                 app.setAxiconEquivalentValue('axiconRadialPeriodMm', radialPeriodMm, mode, 'radialPeriodMm');
                 app.setAxiconEquivalentValue('axiconRadialPeriodPx', radialPeriodPx, mode, 'radialPeriodPx');
+                app.setAxiconEquivalentValue('axiconRadialCycles', radialCycles, mode, 'radialCycles');
                 if ~strcmp(mode, 'physicalEquivalent') && isfinite(physicalBaseAngleDeg)
                     app.Controls.(app.controlKey('phase', 'axiconAngleDeg')).Value = physicalBaseAngleDeg;
                 end
@@ -1278,7 +1292,7 @@ classdef Bessel_Simulation_app < matlab.apps.AppBase
             app.IsSyncingAxiconControls = false;
         end
 
-        function [coneAngleRad, krRadPerMm] = resolveAxiconControlsToConeAndKr(app, mode, kBackground, gridPixelPitchMm)
+        function [coneAngleRad, krRadPerMm] = resolveAxiconControlsToConeAndKr(app, mode, kBackground, gridPixelPitchMm, gridRadiusMm)
             switch mode
                 case 'coneAngle'
                     coneAngleRad = deg2rad(app.Controls.(app.controlKey('phase', 'axiconConeAngleDeg')).Value);
@@ -1291,6 +1305,10 @@ classdef Bessel_Simulation_app < matlab.apps.AppBase
                     radialPeriodPx = app.Controls.(app.controlKey('phase', 'axiconRadialPeriodPx')).Value;
                     radialPeriodMm = radialPeriodPx * gridPixelPitchMm;
                     krRadPerMm = 2 * pi / radialPeriodMm;
+                    coneAngleRad = asin(krRadPerMm / kBackground);
+                case 'radialCycles'
+                    radialCycles = app.Controls.(app.controlKey('phase', 'axiconRadialCycles')).Value;
+                    krRadPerMm = 2 * pi * radialCycles / gridRadiusMm;
                     coneAngleRad = asin(krRadPerMm / kBackground);
                 case 'physicalEquivalent'
                     axiconIndex = app.Controls.(app.controlKey('phase', 'axiconIndex')).Value;
@@ -1321,7 +1339,7 @@ classdef Bessel_Simulation_app < matlab.apps.AppBase
         end
 
         function options = axiconModeOptions(~)
-            options = {'coneAngle', 'radialPeriodMm', 'radialPeriodPx', 'physicalEquivalent'};
+            options = {'coneAngle', 'radialPeriodMm', 'radialPeriodPx', 'radialCycles', 'physicalEquivalent'};
         end
 
         function options = beamQualityModelOptions(~)
@@ -1339,6 +1357,7 @@ classdef Bessel_Simulation_app < matlab.apps.AppBase
                 'phase.axiconConeAngleDeg';
                 'phase.axiconRadialPeriodMm';
                 'phase.axiconRadialPeriodPx';
+                'phase.axiconRadialCycles';
                 'phase.axiconIndex';
                 'phase.axiconAngleDeg'};
             isMatch = any(strcmp(paramPath, syncPaths));
@@ -1415,6 +1434,8 @@ classdef Bessel_Simulation_app < matlab.apps.AppBase
                     description = 'Signed radial 2pi phase period of the SLM axicon, in mm. Use Inf for beta = 0; negative values reverse the radial phase direction.';
                 case 'phase.axiconRadialPeriodPx'
                     description = 'Signed radial 2pi phase period in generated phase-map pixels. Use Inf for beta = 0; negative values reverse the radial phase direction.';
+                case 'phase.axiconRadialCycles'
+                    description = 'Signed number of radial 2pi axicon phase cycles from the beam axis to the simulation-window radius rho=1. A value of 20 gives 20 center-to-edge radial periods.';
                 case 'phase.axiconIndex'
                     description = 'Refractive index of the equivalent physical axicon. Active only when axiconMode is physicalEquivalent.';
                 case 'phase.axiconAngleDeg'
@@ -1446,9 +1467,9 @@ classdef Bessel_Simulation_app < matlab.apps.AppBase
                 case 'phase.helicalPhaseOffset'
                     description = 'Initial angular offset of the helical phase, in degrees. Batch scans vary this parameter.';
                 case 'phase.omegaInner'
-                    description = 'Radial chirp frequency parameter near the center. This affects phase oscillation near the beam axis.';
+                    description = 'Radial chirp cycle density near the center in normalized radius rho. If omegaInner equals omegaOuter, that value is the center-to-edge radial cycle count.';
                 case 'phase.omegaOuter'
-                    description = 'Radial chirp frequency parameter near the edge. Together with omegaInner, it sets the radial frequency sweep.';
+                    description = 'Radial chirp cycle density near the edge in normalized radius rho. Together with omegaInner, it sets the radial cycle-density sweep.';
 
                 case 'optics.lens1FocalLengthMm'
                     description = 'Focal length of lens 1, in mm.';

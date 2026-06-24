@@ -129,10 +129,11 @@ params.beam = struct( ... % 与入射光束横向包络有关的参数
 params.phase = struct( ... % 与相位构造有关的参数
     'airyStrength', 0, ... % Airy 三次相位的强度系数；0 表示关闭
     'airyScaleMm', 1, ... % Airy 相位里的尺度参数，单位 mm
-    'axiconMode', 'coneAngle', ... % axicon 定义方式：coneAngle / radialPeriodMm / radialPeriodPx / physicalEquivalent
+    'axiconMode', 'coneAngle', ... % axicon 定义方式：coneAngle / radialPeriodMm / radialPeriodPx / radialCycles / physicalEquivalent
     'axiconConeAngleDeg', 0.428775541709431, ... % SLM 全息 axicon 的有效出射锥角 beta，单位度
     'axiconRadialPeriodMm', 0.137502962948922, ... % SLM 径向 2pi 相位周期，单位 mm
     'axiconRadialPeriodPx', 17.1878703686153, ... % SLM 径向 2pi 相位周期，单位为当前仿真像素
+    'axiconRadialCycles', 29.090282232579, ... % 中心到归一化半径 rho=1 处的 axicon 径向 2pi 周期数
     'axiconIndex', 1.4287, ... % axicon 材料折射率
     'axiconAngleDeg', 1, ... % axicon 底角，单位度
     'curvedMaxShiftXMm', 0, ... % 曲线 Bessel 末端期望 x 方向横向偏移量，单位 mm
@@ -291,7 +292,8 @@ usesPhysicalFields = any(strcmp(phaseFields, 'axiconIndex')) || any(strcmp(phase
 usesNewDefinitionFields = any(strcmp(phaseFields, 'axiconMode')) || ...
     any(strcmp(phaseFields, 'axiconConeAngleDeg')) || ...
     any(strcmp(phaseFields, 'axiconRadialPeriodMm')) || ...
-    any(strcmp(phaseFields, 'axiconRadialPeriodPx'));
+    any(strcmp(phaseFields, 'axiconRadialPeriodPx')) || ...
+    any(strcmp(phaseFields, 'axiconRadialCycles'));
 
 if usesPhysicalFields && ~usesNewDefinitionFields
     overrides.phase.axiconMode = 'physicalEquivalent';
@@ -667,12 +669,13 @@ function axicon = localResolveAxiconDefinition(params, kBackground)
 % 作用：把 APP/脚本里多种 axicon 定义方式统一转换成 SLM 真正使用的径向相位斜率 kr。
 
 mode = char(string(params.phase.axiconMode)); % 当前 axicon 定义模式
-validModes = {'coneAngle', 'radialPeriodMm', 'radialPeriodPx', 'physicalEquivalent'};
+validModes = {'coneAngle', 'radialPeriodMm', 'radialPeriodPx', 'radialCycles', 'physicalEquivalent'};
 if ~any(strcmp(mode, validModes))
-    error('params.phase.axiconMode must be coneAngle, radialPeriodMm, radialPeriodPx, or physicalEquivalent.');
+    error('params.phase.axiconMode must be coneAngle, radialPeriodMm, radialPeriodPx, radialCycles, or physicalEquivalent.');
 end
 
 gridPixelPitchMm = params.simulation.sizeMm / params.simulation.N; % 当前输出相位矩阵的像素间距，单位 mm/pixel
+gridRadiusMm = params.simulation.sizeMm / 2; % axiconRadialCycles 中 rho=1 对应的真实半径
 physicalBaseAngleRad = deg2rad(params.phase.axiconAngleDeg); % 真实 axicon 等效模式使用的底角 alpha
 
 switch mode
@@ -702,6 +705,17 @@ switch mode
             error('params.phase.axiconRadialPeriodPx is too small for the current wavelength/background index.');
         end
         coneAngleRad = asin(sinConeAngle);
+    case 'radialCycles'
+        radialCycles = params.phase.axiconRadialCycles;
+        if ~isfinite(radialCycles)
+            error('params.phase.axiconRadialCycles must be finite. Use 0 for beta = 0.');
+        end
+        krRadPerMm = 2 * pi * radialCycles / gridRadiusMm;
+        sinConeAngle = krRadPerMm / kBackground;
+        if abs(sinConeAngle) >= 1
+            error('params.phase.axiconRadialCycles is too large for the current wavelength/background index/window size.');
+        end
+        coneAngleRad = asin(sinConeAngle);
     case 'physicalEquivalent'
         if params.phase.axiconIndex <= 0 || params.material.backgroundIndex <= 0
             error('Axicon and background refractive indices must be positive.');
@@ -729,6 +743,7 @@ axicon.coneAngleRad = coneAngleRad;
 axicon.coneAngleDeg = rad2deg(coneAngleRad);
 axicon.radialPeriodMm = 2 * pi / krRadPerMm;
 axicon.radialPeriodPx = axicon.radialPeriodMm / gridPixelPitchMm;
+axicon.radialCycles = krRadPerMm * gridRadiusMm / (2 * pi);
 axicon.gridPixelPitchMm = gridPixelPitchMm;
 axicon.physicalIndex = params.phase.axiconIndex;
 axicon.physicalBaseAngleRad = physicalBaseAngleRad;
@@ -1496,6 +1511,8 @@ switch mode
         token = ['axiconMode=radialPeriodMm period=', num2str(params.phase.axiconRadialPeriodMm), 'mm'];
     case 'radialPeriodPx'
         token = ['axiconMode=radialPeriodPx period=', num2str(params.phase.axiconRadialPeriodPx), 'px'];
+    case 'radialCycles'
+        token = ['axiconMode=radialCycles cycles=', num2str(params.phase.axiconRadialCycles)];
     case 'physicalEquivalent'
         token = ['axiconMode=physicalEquivalent n=', num2str(params.phase.axiconIndex), ' alpha=', num2str(params.phase.axiconAngleDeg), 'deg'];
     otherwise

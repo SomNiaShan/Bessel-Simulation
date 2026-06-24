@@ -199,7 +199,7 @@ run('C:/Users/Shan/Desktop/academic/Bessel-Simulation/src/BPM_drill_AI.m');
 
 - 含义：选择 axicon 的主定义方式。
 - 可选值：
-  `coneAngle`、`radialPeriodMm`、`radialPeriodPx`、`physicalEquivalent`。
+  `coneAngle`、`radialPeriodMm`、`radialPeriodPx`、`radialCycles`、`physicalEquivalent`。
 - 注意：
   程序内部会先把当前模式换算成统一的 `derived.axicon.krRadPerMm` 和
   `derived.axicon.coneAngleDeg`，后续相位和传播距离只使用这两个等效量。
@@ -230,6 +230,19 @@ run('C:/Users/Shan/Desktop/academic/Bessel-Simulation/src/BPM_drill_AI.m');
 - 注意：
   这里的 1 pixel 对应 `simulation.sizeMm / simulation.N` mm。
   如果改变 `N` 或 `sizeMm`，同一个像素周期对应的物理周期也会变化。
+
+#### `axiconRadialCycles`
+
+- 含义：从光轴中心到归一化半径 `rho = 1` 处的 axicon 径向 `2*pi` 相位周期数。
+- 生效条件：
+  `axiconMode = 'radialCycles'`。
+- 换算关系：
+  令 `R = simulation.sizeMm / 2`，则
+  `axiconRadialPeriodMm = R / axiconRadialCycles`，
+  `k_r = 2*pi*axiconRadialCycles/R`。
+- 例子：
+  默认 `sizeMm = 8 mm` 时，`R = 4 mm`；如果 `axiconRadialCycles = 20`，
+  则中心到边缘共有 20 个径向周期，每个周期 `4/20 = 0.2 mm`。
 
 #### `axiconIndex`
 
@@ -605,7 +618,7 @@ run('C:/Users/Shan/Desktop/academic/Bessel-Simulation/src/BPM_drill_AI.m');
 - `checkerboardTc1` / `checkerboardTc2`
 - `checkerboardBeta1Deg` / `checkerboardBeta2Deg`
 - `axiconMode`
-- `axiconConeAngleDeg` / `axiconRadialPeriodMm` / `axiconRadialPeriodPx`
+- `axiconConeAngleDeg` / `axiconRadialPeriodMm` / `axiconRadialPeriodPx` / `axiconRadialCycles`
 
 ### 只想让仿真快一点
 
