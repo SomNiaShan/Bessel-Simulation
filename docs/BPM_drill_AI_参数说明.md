@@ -2,7 +2,7 @@
 
 这份文档对应主脚本：
 
-- `drill-beam-matlab/src/BPM_drill_AI.m`
+- `Bessel-Simulation/src/BPM_drill_AI.m`
 
 阅读建议：
 
@@ -36,7 +36,7 @@ BPM_drill_AI_overrides.phase.vortexCharge = 2;
 BPM_drill_AI_overrides.phase.helicalOrder = 3;
 BPM_drill_AI_overrides.output.writeHelicalPhase = true;
 BPM_drill_AI_overrides.output.writeHelicalOffsetSlmBatch = true;
-run('C:/Users/Shan/Desktop/academic/drill-beam-matlab/src/BPM_drill_AI.m');
+run('C:/Users/Shan/Desktop/academic/Bessel-Simulation/src/BPM_drill_AI.m');
 ```
 
 这样只会覆盖你指定的字段，其余参数仍然使用默认值。
@@ -483,7 +483,7 @@ run('C:/Users/Shan/Desktop/academic/drill-beam-matlab/src/BPM_drill_AI.m');
 - 重要区别：
   这不是把图片旋转，而是每次重新计算 helical 相位和总 SLM 相位。
 - 输出位置：
-  默认写入 `drill-beam-matlab/outputs/SLM_phase_helical_offset_0_to_359/`。
+  默认写入 `Bessel-Simulation/outputs/SLM_phase_helical_offset_0_to_359/`。
 
 #### `helicalOffsetStartDeg`
 
@@ -551,7 +551,7 @@ run('C:/Users/Shan/Desktop/academic/drill-beam-matlab/src/BPM_drill_AI.m');
 
 - 含义：输出目录。
 - 默认行为：
-  脚本会自动把它设为 `drill-beam-matlab/outputs/`。
+  脚本会自动把它设为 `Bessel-Simulation/outputs/`。
 - 一般不建议手动改：
   除非你明确知道想把输出重定向到别的地方。
 
@@ -585,7 +585,7 @@ run('C:/Users/Shan/Desktop/academic/drill-beam-matlab/src/BPM_drill_AI.m');
 
 - 含义：进度日志文件路径。
 - 默认行为：
-  留空时自动写到 `drill-beam-matlab/outputs/BPM_drill_AI_progress.log`。
+  留空时自动写到 `Bessel-Simulation/outputs/BPM_drill_AI_progress.log`。
 - 一般不需要改：
   除非你想把日志写到别的目录。
 

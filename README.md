@@ -1,6 +1,6 @@
-# BPM Drill AI App
+# Bessel Simulation App
 
-MATLAB app and simulation code for BPM drill-beam simulation and SLM phase export.
+MATLAB app and simulation code for Bessel beam simulation and SLM phase export.
 
 ## Requirements
 
@@ -14,7 +14,7 @@ The rotated SLM batch export uses a local nearest-neighbor crop rotation impleme
 Open MATLAB in this folder and run:
 
 ```matlab
-launch_BPM_drill_AI_app
+launch_Bessel_Simulation_app
 ```
 
 The launcher adds `src/` to the MATLAB path and opens the app.
@@ -46,13 +46,13 @@ Same-parity checkerboard tiles use beam 1, alternating tiles use beam 2.
 Use the installer:
 
 ```text
-release/BPM_Drill_AI_App.mltbx
+release/Bessel_Simulation_App.mltbx
 ```
 
 In MATLAB, double-click the `.mltbx` file from the Current Folder browser, or install it through the Add-Ons interface. After installation, start the app from the Apps tab, or run:
 
 ```matlab
-launch_BPM_drill_AI_app
+launch_Bessel_Simulation_app
 ```
 
 ## Rebuild the Installer
@@ -60,20 +60,21 @@ launch_BPM_drill_AI_app
 After editing the source, rebuild the `.mltbx` package with:
 
 ```matlab
-package_BPM_drill_AI_toolbox
+addpath('src')
+package_Bessel_Simulation_toolbox
 ```
 
 This creates:
 
 ```text
-release/BPM_Drill_AI_App.mltbx
+release/Bessel_Simulation_App.mltbx
 ```
 
 ## Files
 
-- `launch_BPM_drill_AI_app.m`: app launcher.
-- `src/BPM_drill_AI_app.m`: MATLAB UI.
-- `src/BPM_drill_AI_app_engine.m`: app simulation engine.
+- `launch_Bessel_Simulation_app.m`: app launcher.
+- `src/Bessel_Simulation_app.m`: MATLAB UI.
+- `src/Bessel_Simulation_app_engine.m`: app simulation engine.
 - `src/BPM_drill_AI.m`: script-style simulation entry point.
 - `docs/`: parameter notes and optical-layout reference.
 - `outputs/`: generated `.bmp`, `.tif`, and log outputs.

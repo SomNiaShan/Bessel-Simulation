@@ -219,8 +219,8 @@ function outputDir = localEnsureOutputDirectory()
 % localEnsureOutputDirectory
 % 作用：定位当前脚本所在的项目目录，并确保 outputs 文件夹存在。
 
-scriptDir = fileparts(mfilename('fullpath')); % 当前脚本所在目录，例如 .../drill-beam-matlab/src
-repoRoot = fileparts(scriptDir); % 项目根目录，例如 .../drill-beam-matlab
+scriptDir = fileparts(mfilename('fullpath')); % 当前脚本所在目录，例如 .../Bessel-Simulation/src
+repoRoot = fileparts(scriptDir); % 项目根目录，例如 .../Bessel-Simulation
 outputDir = fullfile(repoRoot, 'outputs'); % 最终输出目录为项目根目录下的 outputs
 
 if exist(outputDir, 'dir') ~= 7 % 如果这个目录还不存在

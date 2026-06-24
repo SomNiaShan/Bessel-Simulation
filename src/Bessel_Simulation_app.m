@@ -1,4 +1,4 @@
-classdef BPM_drill_AI_app < matlab.apps.AppBase
+classdef Bessel_Simulation_app < matlab.apps.AppBase
     properties (Access = public)
         UIFigure
     end
@@ -24,10 +24,10 @@ classdef BPM_drill_AI_app < matlab.apps.AppBase
     end
 
     methods (Access = public)
-        function app = BPM_drill_AI_app
+        function app = Bessel_Simulation_app
             app.Controls = struct();
             app.ResultAxes = struct();
-            app.Params = BPM_drill_AI_app_engine('defaults');
+            app.Params = Bessel_Simulation_app_engine('defaults');
             app.createComponents();
             app.populateControls(app.Params);
             app.appendStatus('App ready.');
@@ -48,7 +48,7 @@ classdef BPM_drill_AI_app < matlab.apps.AppBase
     methods (Access = private)
         function createComponents(app)
             app.UIFigure = uifigure( ...
-                'Name', 'BPM Drill AI App', ...
+                'Name', 'Bessel Simulation App', ...
                 'Position', [80 80 1380 820]);
 
             mainGrid = uigridlayout(app.UIFigure, [1 2]);
@@ -337,7 +337,7 @@ classdef BPM_drill_AI_app < matlab.apps.AppBase
                 app.appendStatus(app.simulationEstimateMessage(runParams));
                 drawnow;
 
-                results = BPM_drill_AI_app_engine('run', runParams);
+                results = Bessel_Simulation_app_engine('run', runParams);
                 if isfield(results.params, 'runtimeProgressCallback')
                     results.params = rmfield(results.params, 'runtimeProgressCallback');
                 end
@@ -352,7 +352,7 @@ classdef BPM_drill_AI_app < matlab.apps.AppBase
             catch ME
                 app.appendStatus(sprintf('ERROR: %s', ME.message));
                 if ~isempty(app.UIFigure) && isvalid(app.UIFigure)
-                    uialert(app.UIFigure, getReport(ME, 'extended', 'hyperlinks', 'off'), 'BPM Drill AI App');
+                    uialert(app.UIFigure, getReport(ME, 'extended', 'hyperlinks', 'off'), 'Bessel Simulation App');
                 end
             end
             clear runningStateCleanup;
@@ -360,7 +360,7 @@ classdef BPM_drill_AI_app < matlab.apps.AppBase
 
         function resetButtonPushed(app)
             app.Results = [];
-            app.Params = BPM_drill_AI_app_engine('defaults');
+            app.Params = Bessel_Simulation_app_engine('defaults');
             app.populateControls(app.Params);
             app.appendStatus('Parameters reset to defaults.');
         end
@@ -371,7 +371,7 @@ classdef BPM_drill_AI_app < matlab.apps.AppBase
             end
             if isempty(app.Results) || ~isstruct(app.Results)
                 app.appendStatus('ERROR: Run once before using Output.');
-                uialert(app.UIFigure, 'Run the simulation once before exporting output files.', 'BPM Drill AI App');
+                uialert(app.UIFigure, 'Run the simulation once before exporting output files.', 'Bessel Simulation App');
                 return;
             end
 
@@ -393,7 +393,7 @@ classdef BPM_drill_AI_app < matlab.apps.AppBase
                 drawnow;
 
                 payload = struct('results', results, 'params', exportParams);
-                results = BPM_drill_AI_app_engine('export', payload);
+                results = Bessel_Simulation_app_engine('export', payload);
                 if isfield(results.params, 'runtimeProgressCallback')
                     results.params = rmfield(results.params, 'runtimeProgressCallback');
                 end
@@ -404,7 +404,7 @@ classdef BPM_drill_AI_app < matlab.apps.AppBase
             catch ME
                 app.appendStatus(sprintf('ERROR: %s', ME.message));
                 if ~isempty(app.UIFigure) && isvalid(app.UIFigure)
-                    uialert(app.UIFigure, getReport(ME, 'extended', 'hyperlinks', 'off'), 'BPM Drill AI App');
+                    uialert(app.UIFigure, getReport(ME, 'extended', 'hyperlinks', 'off'), 'Bessel Simulation App');
                 end
             end
             clear runningStateCleanup;
