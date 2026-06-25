@@ -55,7 +55,7 @@ function params = localBuildDefaultParams()
 params = struct(); % 新建最外层参数结构体
 
 params.simulation = struct( ... % 与数值仿真网格和传播步进有关的参数
-    'N', 1000, ... % 横向采样点数，即 x-y 平面是 N x N 的网格
+    'N', 1080, ... % 横向采样点数，即 x-y 平面是 N x N 的网格
     'sizeMm', 8, ... % 横向计算窗口的物理尺寸，单位 mm
     'zRangeMm', 800, ... % 沿 z 方向总共传播多远，单位 mm
     'dzMm', 5, ... % 沿 z 方向每一步传播多远，单位 mm
