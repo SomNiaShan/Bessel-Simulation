@@ -107,13 +107,13 @@ params = struct(); % 新建最外层参数结构体
 
 params.simulation = struct( ... % 与数值仿真网格和传播步进有关的参数
     'N', 1080, ... % 横向采样点数，即 x-y 平面是 N x N 的网格
-    'sizeMm', 8, ... % 横向计算窗口的物理尺寸，单位 mm
+    'sizeMm', 8.64, ... % 横向计算窗口的物理尺寸，单位 mm
     'zRangeMm', 800, ... % 沿 z 方向总共传播多远，单位 mm
     'dzMm', 5, ... % 沿 z 方向每一步传播多远，单位 mm
     'useBPM', true); % 是否启用 BPM 传播；若为 false，则只返回输入场
 
 params.laser = struct( ... % 与激光源自身有关的参数
-    'wavelengthMm', double(1.029e-3), ... % 激光波长，单位 mm；1.029e-3 mm = 1029 nm
+    'wavelengthMm', double(1.030e-3), ... % 激光波长，单位 mm；1.030e-3 mm = 1030 nm
     'powerW', 40, ... % 平均功率，单位 W
     'repetitionRateHz', 100e3, ... % 重复频率，单位 Hz
     'pulseWidthS', 275e-15); % 脉宽，单位 s
@@ -131,9 +131,9 @@ params.phase = struct( ... % 与相位构造有关的参数
     'airyScaleMm', 1, ... % Airy 相位里的尺度参数，单位 mm
     'axiconMode', 'coneAngle', ... % axicon 定义方式：coneAngle / radialPeriodMm / radialPeriodPx / radialCycles / physicalEquivalent
     'axiconConeAngleDeg', 0.428775541709431, ... % SLM 全息 axicon 的有效出射锥角 beta，单位度
-    'axiconRadialPeriodMm', 0.137502962948922, ... % SLM 径向 2pi 相位周期，单位 mm
-    'axiconRadialPeriodPx', 17.1878703686153, ... % SLM 径向 2pi 相位周期，单位为当前仿真像素
-    'axiconRadialCycles', 29.090282232579, ... % 中心到归一化半径 rho=1 处的 axicon 径向 2pi 周期数
+    'axiconRadialPeriodMm', 0.13763659070689, ... % SLM 径向 2pi 相位周期，单位 mm
+    'axiconRadialPeriodPx', 17.2045738383613, ... % SLM 径向 2pi 相位周期，单位为当前仿真像素
+    'axiconRadialCycles', 31.3870023793298, ... % 中心到归一化半径 rho=1 处的 axicon 径向 2pi 周期数
     'axiconIndex', 1.4287, ... % axicon 材料折射率
     'axiconAngleDeg', 1, ... % axicon 底角，单位度
     'curvedMaxShiftXMm', 0, ... % 曲线 Bessel 末端期望 x 方向横向偏移量，单位 mm
@@ -516,8 +516,8 @@ grid.sizeMm = simulation.sizeMm; % 保存横向物理尺寸
 grid.dxMm = simulation.sizeMm / simulation.N; % x 方向单个像素的物理大小
 grid.dyMm = grid.dxMm; % y 方向与 x 方向保持相同采样间距
 
-sampleIndices = -floor(simulation.N / 2):(ceil(simulation.N / 2) - 1); % FFT 一致的中心采样索引；奇偶 N 都包含 0
-grid.xValuesMm = sampleIndices * grid.dxMm; % x 坐标轴，间距严格等于 dxMm
+spatialSampleIndices = (1:simulation.N) - simulation.N / 2; % 与 SLM phase 生成器一致的实空间像素中心定义
+grid.xValuesMm = spatialSampleIndices * grid.dxMm; % x 坐标轴，间距严格等于 dxMm
 grid.yValuesMm = grid.xValuesMm; % y 坐标轴，当前使用方形采样窗口
 [grid.x, grid.y] = meshgrid(grid.xValuesMm, grid.yValuesMm); % 在 x-y 平面上建立二维网格坐标
 [grid.theta, grid.r] = cart2pol(grid.x, grid.y); % 把笛卡尔坐标转成极坐标，便于构造涡旋/axicon 等相位
@@ -525,7 +525,8 @@ grid.yValuesMm = grid.xValuesMm; % y 坐标轴，当前使用方形采样窗口
 grid.fSizeInvMm = simulation.N / simulation.sizeMm; % 频域总尺寸，单位 mm^-1
 grid.dfxInvMm = 1 / simulation.sizeMm; % 频域像素间距，单位 mm^-1
 grid.dfyInvMm = grid.dfxInvMm; % y 方向频域采样间距与 x 一样
-frequencyValuesInvMm = sampleIndices * grid.dfxInvMm; % 与 fftshift(fft2(...)) 排列一致的频率坐标
+frequencySampleIndices = -floor(simulation.N / 2):(ceil(simulation.N / 2) - 1); % 与 fftshift(fft2(...)) 排列一致的频率索引
+frequencyValuesInvMm = frequencySampleIndices * grid.dfxInvMm; % 与 fftshift(fft2(...)) 排列一致的频率坐标
 grid.fxValuesInvMm = frequencyValuesInvMm; % 保存一维 fx 坐标
 grid.fyValuesInvMm = frequencyValuesInvMm; % 保存一维 fy 坐标
 [grid.fx, grid.fy] = meshgrid(grid.fxValuesInvMm, grid.fyValuesInvMm); % 建立频域平面的二维网格
@@ -1026,11 +1027,8 @@ pixelPowerW = 1 / sumIntensity; % 假设参考切片总强度归一到 1 W 时�
 pixelPowerDensityWPerMm2 = pixelPowerW / pixelAreaMm2; % 把单像素功率换成功率密度，单位 W/mm^2
 thresholdWPerMm2 = params.material.damageThresholdWPerM2 / 1e6; % 把材料阈值从 W/m^2 转成 W/mm^2；当前默认值对应 7.2e11 W/mm^2
 
-centerRowIndex = find(grid.yValuesMm == 0, 1); % FFT 一致的中心采样轴保证奇偶 N 都有 y=0
-centerColumnIndex = find(grid.xValuesMm == 0, 1); % FFT 一致的中心采样轴保证奇偶 N 都有 x=0
-if isempty(centerRowIndex) || isempty(centerColumnIndex)
-    error('Centered grid does not contain x=0 and y=0 samples.');
-end
+[~, centerRowIndex] = min(abs(grid.yValuesMm)); % SLM 坐标约定下取最靠近 y=0 的采样线
+[~, centerColumnIndex] = min(abs(grid.xValuesMm)); % SLM 坐标约定下取最靠近 x=0 的采样线
 yImageMm = grid.yValuesMm; % y 方向显示坐标，与传播网格保持一致
 zImageMm = reshape(zValuesMm, 1, []); % z 方向显示坐标直接使用传播过程中的真实采样位置
 crossSectionIntensity = reshape(intensityStack(:, centerColumnIndex, :), params.simulation.N, []); % 固定 x=0，提取 y-z 中心截面

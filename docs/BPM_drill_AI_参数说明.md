@@ -241,8 +241,8 @@ run('C:/Users/Shan/Desktop/academic/Bessel-Simulation/src/BPM_drill_AI.m');
   `axiconRadialPeriodMm = R / axiconRadialCycles`，
   `k_r = 2*pi*axiconRadialCycles/R`。
 - 例子：
-  默认 `sizeMm = 8 mm` 时，`R = 4 mm`；如果 `axiconRadialCycles = 20`，
-  则中心到边缘共有 20 个径向周期，每个周期 `4/20 = 0.2 mm`。
+  默认 `sizeMm = 8.64 mm` 时，`R = 4.32 mm`；如果 `axiconRadialCycles = 20`，
+  则中心到边缘共有 20 个径向周期，每个周期 `4.32/20 = 0.216 mm`。
 
 #### `axiconIndex`
 
