@@ -108,7 +108,7 @@ params = struct(); % 新建最外层参数结构体
 params.simulation = struct( ... % 与数值仿真网格和传播步进有关的参数
     'N', 1080, ... % 横向采样点数，即 x-y 平面是 N x N 的网格
     'sizeMm', 8.64, ... % 横向计算窗口的物理尺寸，单位 mm
-    'zRangeMm', 800, ... % 沿 z 方向总共传播多远，单位 mm
+    'zRangeMm', 1000, ... % 沿 z 方向总共传播多远，单位 mm
     'dzMm', 5, ... % 沿 z 方向每一步传播多远，单位 mm
     'useBPM', true); % 是否启用 BPM 传播；若为 false，则只返回输入场
 
@@ -119,7 +119,7 @@ params.laser = struct( ... % 与激光源自身有关的参数
     'pulseWidthS', 275e-15); % 脉宽，单位 s
 
 params.beam = struct( ... % 与入射光束横向包络有关的参数
-    'waistRadiusMm', 2, ... % 高斯光束腰半径，单位 mm
+    'waistRadiusMm', 2.5, ... % 高斯光束腰半径，单位 mm
     'fieldAmplitude', 1, ... % 输入场的幅值系数
     'beamQualityM2', 1.2, ... % Laser beam-quality factor M^2; 1 is ideal Gaussian.
     'beamQualityModel', 'effectiveGaussian', ... % effectiveGaussian / coherentHG / incoherentHG
@@ -129,11 +129,11 @@ params.beam = struct( ... % 与入射光束横向包络有关的参数
 params.phase = struct( ... % 与相位构造有关的参数
     'airyStrength', 0, ... % Airy 三次相位的强度系数；0 表示关闭
     'airyScaleMm', 1, ... % Airy 相位里的尺度参数，单位 mm
-    'axiconMode', 'coneAngle', ... % axicon 定义方式：coneAngle / radialPeriodMm / radialPeriodPx / radialCycles / physicalEquivalent
+    'axiconMode', 'radialCycles', ... % axicon 定义方式：coneAngle / radialPeriodMm / radialPeriodPx / radialCycles / physicalEquivalent
     'axiconConeAngleDeg', 0.428775541709431, ... % SLM 全息 axicon 的有效出射锥角 beta，单位度
     'axiconRadialPeriodMm', 0.13763659070689, ... % SLM 径向 2pi 相位周期，单位 mm
     'axiconRadialPeriodPx', 17.2045738383613, ... % SLM 径向 2pi 相位周期，单位为当前仿真像素
-    'axiconRadialCycles', 31.3870023793298, ... % 中心到归一化半径 rho=1 处的 axicon 径向 2pi 周期数
+    'axiconRadialCycles', 10, ... % 中心到归一化半径 rho=1 处的 axicon 径向 2pi 周期数
     'axiconIndex', 1.4287, ... % axicon 材料折射率
     'axiconAngleDeg', 1, ... % axicon 底角，单位度
     'curvedMaxShiftXMm', 0, ... % 曲线 Bessel 末端期望 x 方向横向偏移量，单位 mm
@@ -146,11 +146,11 @@ params.phase = struct( ... % 与相位构造有关的参数
     'checkerboardTc2', -1, ... % Topological charge of checkerboard Bessel vortex beam 2.
     'checkerboardBeta1Deg', 0.428775541709431, ... % Axicon cone angle beta_1 for checkerboard beam 1, in degrees.
     'checkerboardBeta2Deg', 0.428775541709431, ... % Axicon cone angle beta_2 for checkerboard beam 2, in degrees.
-    'helicalGamma', 0, ... % helical 相位的调制度
+    'helicalGamma', 1.3, ... % helical 相位的调制度
     'helicalOrder', 1, ... % helical 相位中的角向频率阶数 m
     'helicalPhaseOffset', 0, ... % helical 相位的初始相位偏置，单位度；代入公式前会转换为弧度
-    'omegaInner', 20, ... % 径向 chirp 在中心处的频率参数
-    'omegaOuter', 20); % 径向 chirp 在边缘处的频率参数
+    'omegaInner', 5, ... % 径向 chirp 在中心处的频率参数
+    'omegaOuter', 5); % 径向 chirp 在边缘处的频率参数
 
 params.optics = struct( ... % 与传播过程中可能加入的透镜/样品有关的参数
     'lens1FocalLengthMm', 200, ... % 第一片透镜焦距，单位 mm
@@ -1087,42 +1087,42 @@ tiledlayout(2, 4, 'Padding', 'none', 'TileSpacing', 'compact'); % 用 2x4 的紧
 nexttile; % 切到第 1 个子图
 imshow(angle(results.inputField), []); % 显示输入复场的相位
 title('Phase on SLM (angle(E))'); % 图标题
-colorbar; % 显示颜色条
+localApplyValueColorbar(gca, angle(results.inputField), 'wrappedPhase'); % 显示带数值的颜色条
 
 nexttile; % 切到第 2 个子图
 imshow(results.inputIntensity, []); % 显示输入场强度
 title('input beam (|E|^2)'); % 图标题
-colorbar; % 显示颜色条
+localApplyValueColorbar(gca, results.inputIntensity, 'auto'); % 显示带数值的颜色条
 
 nexttile; % 切到第 3 个子图
 imshow(results.angularSpectrumIntensity, []); % 显示输入场角谱强度
 title('Angular spectrum (|F|^2)'); % 图标题
-colorbar; % 显示颜色条
+localApplyValueColorbar(gca, results.angularSpectrumIntensity, 'auto'); % 显示带数值的颜色条
 
 nexttile; % 切到第 4 个子图
 imshow(angle(exp(1i * results.phase.checkerboardBessel)), []); % 显示棋盘 Bessel vortex 相位
 title('phase checker Bessel'); % 图标题
-colorbar; % 显示颜色条
+localApplyValueColorbar(gca, angle(exp(1i * results.phase.checkerboardBessel)), 'wrappedPhase'); % 显示带数值的颜色条
 
 nexttile; % 切到第 5 个子图
 imshow(results.phase.helical, []); % 显示 helical 相位本体
 title('phase helical'); % 图标题
-colorbar; % 显示颜色条
+localApplyValueColorbar(gca, results.phase.helical, 'auto'); % 显示带数值的颜色条
 
 nexttile; % 切到第 6 个子图
 imshow(angle(exp(1i * results.phase.axicon)), []); % 显示 axicon 相位包裹回 [-pi, pi] 之后的样子
 title('phase axicon'); % 图标题
-colorbar; % 显示颜色条
+localApplyValueColorbar(gca, angle(exp(1i * results.phase.axicon)), 'wrappedPhase'); % 显示带数值的颜色条
 
 nexttile; % 切到第 7 个子图
 imshow(angle(exp(1i * results.phase.vortex)), []); % 显示 vortex 相位包裹回 [-pi, pi] 之后的样子
 title('phase vortex'); % 图标题
-colorbar; % 显示颜色条
+localApplyValueColorbar(gca, angle(exp(1i * results.phase.vortex)), 'wrappedPhase'); % 显示带数值的颜色条
 
 nexttile; % 切到第 8 个子图
 imshow(results.phase.checkerboardMask, []); % 显示棋盘 mask
 title('checker mask'); % 图标题
-colorbar; % 显示颜色条
+localApplyValueColorbar(gca, double(results.phase.checkerboardMask), 'mask'); % 显示带数值的颜色条
 
 figure(2); % 新建第二张图窗
 clf('reset'); % 清掉上一轮图里的隐藏辅助线和色条
@@ -1131,7 +1131,7 @@ tiledlayout(3, 1, 'Padding', 'none', 'TileSpacing', 'compact'); % 用 3x1 的布
 nexttile; % 切到第 1 个子图
 imagesc(results.postprocess.zImageMm, results.postprocess.yImageMm, results.postprocess.crossSectionPeakPowerDensityLog); % 显示峰值功率密度的对数剖面图
 title('Estimated center y-z peak power density log scale (W/mm^2)'); % 图标题
-colorbar; % 显示颜色条
+localApplyValueColorbar(gca, results.postprocess.crossSectionPeakPowerDensityLog, 'auto'); % 显示带数值的颜色条
 localPlotActiveMarkers(gca, results, params); % 如果启用了透镜/样品，就在图上画位置线
 axis on; % 保留坐标轴
 xlabel('z (mm)'); % x 轴标签
@@ -1140,7 +1140,7 @@ ylabel('y (mm)'); % y 轴标签
 nexttile; % 切到第 2 个子图
 imagesc(results.postprocess.zImageMm, results.postprocess.yImageMm, results.postprocess.crossSectionPeakPowerDensityWPerMm2); % 显示线性尺度的峰值功率密度剖面图
 title('Estimated center y-z peak power density (W/mm^2)'); % 图标题
-colorbar; % 显示颜色条
+localApplyValueColorbar(gca, results.postprocess.crossSectionPeakPowerDensityWPerMm2, 'auto'); % 显示带数值的颜色条
 localPlotActiveMarkers(gca, results, params); % 如果启用了透镜/样品，就在图上画位置线
 axis on; % 保留坐标轴
 xlabel('z (mm)'); % x 轴标签
@@ -1161,6 +1161,96 @@ ylabel('Power density (W/mm^2)'); % 补上纵坐标标签
 title('Estimated on-axis and slice-peak power density (W/mm^2)'); % 图标题
 legend('Location', 'northeast'); % 区分轴上采样和真实切片峰值
 hold off; % 关闭叠加模式
+end
+
+function localApplyValueColorbar(axHandle, data, scaleMode)
+[limits, ticks, tickLabels] = localColorbarScaleSpec(data, scaleMode);
+set(axHandle, 'CLim', limits);
+colorbarHandle = colorbar(axHandle);
+colorbarHandle.Ticks = ticks;
+colorbarHandle.TickLabels = tickLabels;
+colorbarHandle.Color = localColorbarTextColor(axHandle);
+colorbarHandle.Box = 'on';
+colorbarHandle.Label.String = '';
+try
+    colorbarHandle.TickLabelInterpreter = 'none';
+catch
+end
+end
+
+function [limits, ticks, tickLabels] = localColorbarScaleSpec(data, scaleMode)
+switch char(string(scaleMode))
+    case 'wrappedPhase'
+        limits = [-pi, pi];
+        ticks = [-pi, -pi / 2, 0, pi / 2, pi];
+    case 'mask'
+        limits = [0, 1];
+        ticks = [0, 1];
+    otherwise
+        finiteValues = data(isfinite(data));
+        if isempty(finiteValues)
+            limits = [0, 1];
+            ticks = linspace(limits(1), limits(2), 5);
+        else
+            minValue = min(finiteValues(:));
+            maxValue = max(finiteValues(:));
+            if minValue == maxValue
+                padding = max(1, abs(minValue)) * 0.5;
+                limits = [minValue - padding, maxValue + padding];
+                ticks = minValue;
+            else
+                limits = [minValue, maxValue];
+                ticks = linspace(limits(1), limits(2), 5);
+            end
+        end
+end
+tickLabels = localFormatColorbarTickLabels(ticks);
+end
+
+function tickLabels = localFormatColorbarTickLabels(ticks)
+tickLabels = arrayfun(@localFormatColorbarValue, ticks, 'UniformOutput', false);
+end
+
+function label = localFormatColorbarValue(value)
+if value == 0
+    label = '0';
+elseif abs(value) >= 1e4 || abs(value) < 1e-3
+    label = sprintf('%.2e', value);
+else
+    label = sprintf('%.3f', value);
+    label = regexprep(label, '(\.\d*?)0+$', '$1');
+    label = regexprep(label, '\.$', '');
+end
+end
+
+function textColor = localColorbarTextColor(axHandle)
+textColor = [0.15, 0.15, 0.15];
+try
+    if isnumeric(axHandle.XColor) && numel(axHandle.XColor) == 3
+        textColor = axHandle.XColor;
+    end
+catch
+end
+
+backgroundColor = axHandle.Color;
+try
+    if ~(isnumeric(backgroundColor) && numel(backgroundColor) == 3)
+        figureHandle = ancestor(axHandle, 'figure');
+        if ~isempty(figureHandle) && isnumeric(figureHandle.Color) && numel(figureHandle.Color) == 3
+            backgroundColor = figureHandle.Color;
+        else
+            backgroundColor = [1, 1, 1];
+        end
+    end
+catch
+    backgroundColor = [1, 1, 1];
+end
+
+if mean(backgroundColor) < 0.35 && mean(textColor) < 0.5
+    textColor = [0.86, 0.86, 0.86];
+elseif mean(backgroundColor) >= 0.35 && mean(textColor) > 0.65
+    textColor = [0.15, 0.15, 0.15];
+end
 end
 
 function localAddBlankColorbarSlot(axHandle)

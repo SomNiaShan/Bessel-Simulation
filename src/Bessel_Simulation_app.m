@@ -218,10 +218,11 @@ classdef Bessel_Simulation_app < matlab.apps.AppBase
 
             panelSize = panel.Position(3:4);
             inset = 6;
-            sideLength = max(20, min(panelSize) - 2 * inset);
-            left = (panelSize(1) - sideLength) / 2;
+            colorbarReserve = 58;
+            sideLength = max(20, min(panelSize(2) - 2 * inset, panelSize(1) - 2 * inset - colorbarReserve));
+            left = (panelSize(1) - sideLength - colorbarReserve) / 2;
             bottom = (panelSize(2) - sideLength) / 2;
-            ax.Position = [left, bottom, sideLength, sideLength];
+            ax.Position = [max(0, left), max(0, bottom), sideLength, sideLength];
         end
 
         function addParameterTab(app, parent, groupName, titleText, specs)
@@ -660,14 +661,14 @@ classdef Bessel_Simulation_app < matlab.apps.AppBase
         end
 
         function updateResultPreview(app, results)
-            app.showImage(app.ResultAxes.slmPhase, angle(results.inputField), 'Phase on SLM');
-            app.showImage(app.ResultAxes.inputIntensity, app.resultInputIntensity(results), 'Input beam |E|^2');
-            app.showImage(app.ResultAxes.angularSpectrum, app.resultAngularSpectrumIntensity(results), 'Angular spectrum |F|^2');
-            app.showImage(app.ResultAxes.checkerboardBesselPhase, angle(exp(1i * results.phase.checkerboardBessel)), 'Checker Bessel phase');
-            app.showImage(app.ResultAxes.helicalPhase, results.phase.helical, 'Helical phase');
-            app.showImage(app.ResultAxes.axiconPhase, angle(exp(1i * results.phase.axicon)), 'Axicon phase');
-            app.showImage(app.ResultAxes.vortexPhase, angle(exp(1i * results.phase.vortex)), 'Vortex phase');
-            app.showImage(app.ResultAxes.checkerboardMask, double(results.phase.checkerboardMask), 'Checker mask');
+            app.showImage(app.ResultAxes.slmPhase, angle(results.inputField), 'Phase on SLM', 'wrappedPhase');
+            app.showImage(app.ResultAxes.inputIntensity, app.resultInputIntensity(results), 'Input beam |E|^2', 'auto');
+            app.showImage(app.ResultAxes.angularSpectrum, app.resultAngularSpectrumIntensity(results), 'Angular spectrum |F|^2', 'auto');
+            app.showImage(app.ResultAxes.checkerboardBesselPhase, angle(exp(1i * results.phase.checkerboardBessel)), 'Checker Bessel phase', 'wrappedPhase');
+            app.showImage(app.ResultAxes.helicalPhase, results.phase.helical, 'Helical phase', 'auto');
+            app.showImage(app.ResultAxes.axiconPhase, angle(exp(1i * results.phase.axicon)), 'Axicon phase', 'wrappedPhase');
+            app.showImage(app.ResultAxes.vortexPhase, angle(exp(1i * results.phase.vortex)), 'Vortex phase', 'wrappedPhase');
+            app.showImage(app.ResultAxes.checkerboardMask, double(results.phase.checkerboardMask), 'Checker mask', 'mask');
 
             app.showCrossSection(app.ResultAxes.peakLog, ...
                 results.postprocess.zImageMm, ...
@@ -719,13 +720,13 @@ classdef Bessel_Simulation_app < matlab.apps.AppBase
             end
         end
 
-        function showImage(~, ax, data, titleText)
+        function showImage(app, ax, data, titleText, scaleMode)
             cla(ax);
             imagesc(ax, data);
             axis(ax, 'image');
             axis(ax, 'off');
             title(ax, titleText);
-            colorbar(ax);
+            app.applyValueColorbar(ax, data, scaleMode);
         end
 
         function showCrossSection(app, ax, zValues, yValues, data, titleText, results)
@@ -735,10 +736,101 @@ classdef Bessel_Simulation_app < matlab.apps.AppBase
             title(ax, titleText);
             xlabel(ax, 'z (mm)');
             ylabel(ax, 'y (mm)');
-            colorbar(ax);
+            app.applyValueColorbar(ax, data, 'auto');
             xlim(ax, [min(zValues), max(zValues)]);
             ylim(ax, [min(yValues), max(yValues)]);
             app.plotActiveMarkers(ax, results);
+        end
+
+        function applyValueColorbar(app, ax, data, scaleMode)
+            [limits, ticks, tickLabels] = app.colorbarScaleSpec(data, scaleMode);
+            ax.CLim = limits;
+            colorbarHandle = colorbar(ax);
+            colorbarHandle.Ticks = ticks;
+            colorbarHandle.TickLabels = tickLabels;
+            colorbarHandle.Color = app.colorbarTextColor(ax);
+            colorbarHandle.FontSize = 9;
+            colorbarHandle.Box = 'on';
+            colorbarHandle.Label.String = '';
+            try
+                colorbarHandle.TickLabelInterpreter = 'none';
+            catch
+            end
+        end
+
+        function [limits, ticks, tickLabels] = colorbarScaleSpec(app, data, scaleMode)
+            switch char(string(scaleMode))
+                case 'wrappedPhase'
+                    limits = [-pi, pi];
+                    ticks = [-pi, -pi / 2, 0, pi / 2, pi];
+                case 'mask'
+                    limits = [0, 1];
+                    ticks = [0, 1];
+                otherwise
+                    finiteValues = data(isfinite(data));
+                    if isempty(finiteValues)
+                        limits = [0, 1];
+                        ticks = linspace(limits(1), limits(2), 5);
+                    else
+                        minValue = min(finiteValues(:));
+                        maxValue = max(finiteValues(:));
+                        if minValue == maxValue
+                            padding = max(1, abs(minValue)) * 0.5;
+                            limits = [minValue - padding, maxValue + padding];
+                            ticks = minValue;
+                        else
+                            limits = [minValue, maxValue];
+                            ticks = linspace(limits(1), limits(2), 5);
+                        end
+                    end
+            end
+            tickLabels = app.formatColorbarTickLabels(ticks);
+        end
+
+        function tickLabels = formatColorbarTickLabels(app, ticks)
+            tickLabels = arrayfun(@(value)app.formatColorbarValue(value), ticks, 'UniformOutput', false);
+        end
+
+        function label = formatColorbarValue(~, value)
+            if value == 0
+                label = '0';
+            elseif abs(value) >= 1e4 || abs(value) < 1e-3
+                label = sprintf('%.2e', value);
+            else
+                label = sprintf('%.3f', value);
+                label = regexprep(label, '(\.\d*?)0+$', '$1');
+                label = regexprep(label, '\.$', '');
+            end
+        end
+
+        function textColor = colorbarTextColor(~, ax)
+            textColor = [0.15, 0.15, 0.15];
+            try
+                if isnumeric(ax.XColor) && numel(ax.XColor) == 3
+                    textColor = ax.XColor;
+                end
+            catch
+            end
+
+            backgroundColor = ax.Color;
+            try
+                if ~(isnumeric(backgroundColor) && numel(backgroundColor) == 3)
+                    figureHandle = ancestor(ax, 'figure');
+                    if ~isempty(figureHandle) && isnumeric(figureHandle.Color) && numel(figureHandle.Color) == 3
+                        backgroundColor = figureHandle.Color;
+                    else
+                        backgroundColor = [1, 1, 1];
+                    end
+                end
+            catch
+                backgroundColor = [1, 1, 1];
+            end
+
+            if mean(backgroundColor) < 0.35 && mean(textColor) < 0.5
+                textColor = [0.86, 0.86, 0.86];
+            elseif mean(backgroundColor) >= 0.35 && mean(textColor) > 0.65
+                textColor = [0.15, 0.15, 0.15];
+            end
         end
 
         function clearAxesForRedraw(~, ax)
