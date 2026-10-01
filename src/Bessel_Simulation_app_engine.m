@@ -4,6 +4,7 @@ function varargout = Bessel_Simulation_app_engine(action, params)
 % not modified. Use:
 %   params = Bessel_Simulation_app_engine('defaults');
 %   results = Bessel_Simulation_app_engine('run', params);
+%   preflight = Bessel_Simulation_app_engine('plan', params); % no propagation
 %   results = Bessel_Simulation_app_engine('export', struct('results', results, 'params', params));
 
 if nargin == 0
@@ -22,11 +23,15 @@ switch action
         params = localBuildDefaultParams();
         varargout{1} = params;
         return;
-    case "run"
+    case {"run", "plan"}
         if isempty(params)
             params = localBuildDefaultParams();
         else
             params = localApplyWorkspaceOverrides(localBuildDefaultParams(), params);
+        end
+        if action == "plan"
+            varargout{1} = localPlanSimulation(params);
+            return;
         end
     case "export"
         if isempty(params) || ~isstruct(params) || ~isfield(params, 'results')
@@ -110,7 +115,16 @@ params.simulation = struct( ... % 与数值仿真网格和传播步进有关的�
     'sizeMm', 8.64, ... % 横向计算窗口的物理尺寸，单位 mm
     'zRangeMm', 1000, ... % 沿 z 方向总共传播多远，单位 mm
     'dzMm', 5, ... % 沿 z 方向每一步传播多远，单位 mm
-    'useBPM', true); % 是否启用 BPM 传播；若为 false，则只返回输入场
+    'zSamplingMode', 'uniform', ... % uniform / local observation sampling
+    'zRefinementRegionsMm', zeros(0,3), ... % [start, end, maximum dz] in mm
+    'zExtraPlanesMm', zeros(1,0), ... % additional exact observation planes
+    'maxZPlanes', 20000, ... % coordinate/stack allocation safety limit
+    'useBPM', true, ... % 是否启用传播；若为 false，则只返回输入场
+    'propagationMethod', 'adaptiveCollins', ... % adaptiveCollins / legacyASM
+    'adaptiveOutputN', 512, ... % 聚焦观察窗口的每轴采样点数
+    'adaptiveOutputSizeMm', 0, ... % 0 = 根据焦距比选择观察窗口；正值 = 指定窗口宽度
+    'bandLimitASM', true, ... % 在自由传播区使用二维带限判据并报告被移除的谱功率
+    'maxWorkingGiB', 3); % 自适应传播估算的内存上限
 
 params.laser = struct( ... % 与激光源自身有关的参数
     'wavelengthMm', double(1.030e-3), ... % 激光波长，单位 mm；1.030e-3 mm = 1030 nm
@@ -129,6 +143,11 @@ params.beam = struct( ... % 与入射光束横向包络有关的参数
 params.phase = struct( ... % 与相位构造有关的参数
     'airyStrength', 0, ... % Airy 三次相位的强度系数；0 表示关闭
     'airyScaleMm', 1, ... % Airy 相位里的尺度参数，单位 mm
+    'apertureRadiusMm', 0, ... % Circular amplitude-aperture radius at the SLM plane; 0 means fully open
+    'referenceRadiusMm', 4.32, ... % axicon cycles / radial chirp / curved path 的固定物理参考半径
+    'referencePixelPitchMm', 0.008, ... % px 定义模式与棋盘尺寸使用的固定物理参考像素间距
+    'axiconGeometry', 'circular', ... % circular / linear1D; circular preserves the original radial axicon
+    'axiconOrientationDeg', 0, ... % Normal direction of the 1D axicon phase; 0 deg means variation along x
     'axiconMode', 'radialCycles', ... % axicon 定义方式：coneAngle / radialPeriodMm / radialPeriodPx / radialCycles / physicalEquivalent
     'axiconConeAngleDeg', 0.428775541709431, ... % SLM 全息 axicon 的有效出射锥角 beta，单位度
     'axiconRadialPeriodMm', 0.13763659070689, ... % SLM 径向 2pi 相位周期，单位 mm
@@ -158,6 +177,8 @@ params.optics = struct( ... % 与传播过程中可能加入的透镜/样品有�
     'lens1PositionMm', 400, ... % 第一片透镜放置位置，单位 mm
     'lens2PositionMm', 640, ... % 第二片透镜放置位置，单位 mm
     'samplePositionMm', 660, ... % 样品在 z 轴上的绝对位置，单位 mm
+    'layoutMode', 'manual', ... % manual / telescopeLocked
+    'sampleOffsetFromLens2Mm', 20, ... % telescopeLocked 时样品距第二片透镜的位置
     'lens1Enabled', true, ... % 是否真的在传播中加入第一片透镜
     'lens2Enabled', true, ... % 是否真的在传播中加入第二片透镜
     'sampleEnabled', true); % 是否真的在传播中切换到样品折射率
@@ -169,6 +190,7 @@ params.material = struct( ... % 与介质本身有关的参数
 
 params.output = struct( ... % 与绘图和导出有关的参数
     'write3DIntensity', false, ... % 是否导出三维强度切片 tif
+    'writeRawIntensity', false, ... % 是否导出带物理坐标的原始浮点强度 MAT
     'writeAllPhase', false, ... % 是否导出总 SLM 相位 bmp
     'writeHelicalPhase', false, ... % 是否导出单独的 helical 相位 bmp
     'writeHelicalOffsetSlmBatch', false, ... % 是否批量扫描 helicalPhaseOffset 并导出总 SLM 相位 bmp
@@ -184,7 +206,7 @@ params.output = struct( ... % 与绘图和导出有关的参数
     'rotatedSlmSubfolder', 'SLM_phase_rotated_0_to_359', ... % 批量旋转 SLM 图单独保存到 outputs 下面的这个子文件夹
     'plotFigures', false, ... % 是否绘制图窗
     'cropHalfWidthPixels', 100, ... % 导出 3D 强度时，围绕中心裁剪的半宽像素数
-    'referenceSliceIndex', 30, ... % 用于做功率密度归一化参考的 z 切片编号
+    'referenceSliceIndex', 30, ... % 旧后端的参考切片；自适应后端从输入平面标定功率
     'printProgress', false, ... % 是否在 MATLAB/VS Code 终端里打印 BPM 进度
     'progressIntervalSeconds', 5, ... % 每隔多少秒打印一次进度
     'writeProgressLog', false, ... % 是否把 BPM 进度同步写入 outputs 里的 log 文件
@@ -196,6 +218,7 @@ end
 function params = localSuppressRunOutput(params)
 outputActionFields = {
     'write3DIntensity';
+    'writeRawIntensity';
     'writeAllPhase';
     'writeHelicalPhase';
     'writeHelicalOffsetSlmBatch';
@@ -235,9 +258,16 @@ else
     assignin('base', 'E_3D_BPM', []);
 end
 assignin('base', 'I_3D_BPM', localGetPropagationIntensity(results.propagation));
+if isfield(results,'observationGrid')
+    assignin('base','I_3D_x_mm',results.observationGrid.xValuesMm);
+    assignin('base','I_3D_y_mm',results.observationGrid.yValuesMm);
+    assignin('base','I_3D_z_mm',results.propagation.zValuesMm);
+end
 assignin('base', 'phase_all', results.phase.all);
 assignin('base', 'phase_helical', results.phase.helical);
 assignin('base', 'phase_checkerboard_bessel', results.phase.checkerboardBessel);
+assignin('base', 'aperture_mask', results.aperture.mask);
+assignin('base', 'aperture_transmission', results.aperture.transmission);
 assignin('base', 'output_dir', params.output.outputDir);
 end
 
@@ -262,7 +292,29 @@ end
 
 overrides = localNormalizeLegacyCurvedShiftOverrides(overrides); % 兼容旧脚本里 curvedMaxShiftMm 只控制 x 方向的用法
 overrides = localNormalizeLegacyAxiconOverrides(overrides); % 兼容旧脚本里只覆盖 axiconAngleDeg/axiconIndex 的用法
+if isfield(overrides,'phase') && isstruct(overrides.phase) && ...
+        isfield(overrides,'simulation') && isstruct(overrides.simulation) && ...
+        isfield(overrides.simulation,'sizeMm') && isfield(overrides.simulation,'N') && ...
+        isfield(overrides.phase,'axiconMode') && isfield(overrides.phase,'omegaInner')
+    % An older complete parameter snapshot used its computational grid as
+    % the phase reference. Preserve that physical phase when it is loaded.
+    if ~isfield(overrides.phase,'referenceRadiusMm')
+        overrides.phase.referenceRadiusMm = overrides.simulation.sizeMm/2;
+    end
+    if ~isfield(overrides.phase,'referencePixelPitchMm')
+        overrides.phase.referencePixelPitchMm = ...
+            overrides.simulation.sizeMm/overrides.simulation.N;
+    end
+end
 params = localMergeStructs(params, overrides); % 真正执行结构体递归合并
+if strcmp(char(string(params.optics.layoutMode)), 'telescopeLocked')
+    params.optics.lens2PositionMm = params.optics.lens1PositionMm + ...
+        params.optics.lens1FocalLengthMm + params.optics.lens2FocalLengthMm;
+    params.optics.samplePositionMm = params.optics.lens2PositionMm + ...
+        params.optics.sampleOffsetFromLens2Mm;
+elseif ~strcmp(char(string(params.optics.layoutMode)), 'manual')
+    error('optics.layoutMode must be manual or telescopeLocked.');
+end
 end
 
 function overrides = localNormalizeLegacyCurvedShiftOverrides(overrides)
@@ -346,22 +398,106 @@ else % 如果用户没有指定
 end
 end
 
-function results = localRunSimulation(params)
-% localRunSimulation
-% 作用：把“建网格 -> 算派生量 -> 构造相位 -> 传播 -> 后处理”这一整套流程串起来。
-% 这样主脚本顶层就比较干净，一眼能看出执行顺序。
+function preflight = localPlanSimulation(params)
+% Validate observation sampling and estimate arrays without building fields
+% or creating output files. Shared by the UI preview and simulation Run.
 
-grid = localSetupGrid(params.simulation); % 根据仿真尺寸和采样点数建立空间网格与频域网格
+method = char(string(params.simulation.propagationMethod));
+if ~any(strcmp(method,{'adaptiveCollins','legacyASM'}))
+    error('simulation.propagationMethod must be adaptiveCollins or legacyASM.');
+end
+if ~isscalar(params.simulation.N) || ~isfinite(params.simulation.N) || ...
+        params.simulation.N < 2 || params.simulation.N ~= round(params.simulation.N) || ...
+        ~isscalar(params.simulation.sizeMm) || ~isfinite(params.simulation.sizeMm) || ...
+        params.simulation.sizeMm <= 0 || ~isscalar(params.simulation.dzMm) || ...
+        ~isfinite(params.simulation.dzMm) || params.simulation.dzMm <= 0 || ...
+        ~isscalar(params.simulation.zRangeMm) || ~isfinite(params.simulation.zRangeMm) || ...
+        params.simulation.zRangeMm < 0
+    error('simulation N must be an integer >=2, sizeMm/dzMm positive, and zRangeMm finite and nonnegative.');
+end
+if strcmp(method,'adaptiveCollins') && (~isscalar(params.simulation.maxWorkingGiB) || ...
+        ~isfinite(params.simulation.maxWorkingGiB) || params.simulation.maxWorkingGiB <= 0)
+    error('simulation.maxWorkingGiB must be positive and finite.');
+end
+if strcmp(method,'adaptiveCollins') && (~isscalar(params.simulation.adaptiveOutputN) || ...
+        ~isfinite(params.simulation.adaptiveOutputN) || ...
+        params.simulation.adaptiveOutputN < 2 || ...
+        params.simulation.adaptiveOutputN ~= round(params.simulation.adaptiveOutputN))
+    error('simulation.adaptiveOutputN must be an integer >=2.');
+end
+if ~isscalar(params.simulation.adaptiveOutputSizeMm) || ...
+        ~isreal(params.simulation.adaptiveOutputSizeMm) || ...
+        ~isfinite(params.simulation.adaptiveOutputSizeMm) || params.simulation.adaptiveOutputSizeMm < 0
+    error('simulation.adaptiveOutputSizeMm must be finite and nonnegative.');
+end
+zPlan = bessel_build_z_plan(params);
+memory = [];
+if params.simulation.useBPM && strcmp(method,'adaptiveCollins')
+    memory = bessel_estimate_adaptive_memory(params,zPlan);
+end
+preflight = struct('params',params,'zPlan',zPlan,'memory',memory);
+end
+
+function results = localRunSimulation(params)
+% Preflight runs before source grids, fields, or output stacks are allocated.
+preflight = localPlanSimulation(params);
+zPlan = preflight.zPlan;
+if ~isempty(preflight.memory) && ~preflight.memory.withinBudget
+    error('Bessel:Memory:BudgetExceeded', ...
+        ['Estimated adaptive working memory %.2f GiB exceeds budget %.2f GiB ' ...
+        '(%d z planes). Reduce source N, ROI samples, or z sampling.'], ...
+        preflight.memory.totalGiB,preflight.memory.budgetGiB,zPlan.planeCount);
+end
+grid = localSetupGrid(params.simulation,zPlan.zValuesMm); % physical source grid
 derived = localBuildDerivedQuantities(params); % 计算一些从原始参数推导出来的量
 phase = localBuildPhaseMaps(grid, params, derived); % 构造所有相位分量以及总相位
 inputModes = localBuildInputModes(grid, params, phase, derived); % 按 beamQualityM2 构造理想高斯或 HG 模式混合输入
 
-propagation = localRunBpmPropagationForModes(inputModes, grid, params, derived); % 用 FFT-BPM 做 z 方向传播
-postprocess = localComputePostprocess(localGetPropagationIntensity(propagation), propagation.zValuesMm, grid, params, derived, true); % 对传播结果做功率密度等后处理
+if params.simulation.useBPM && strcmp(char(string(params.simulation.propagationMethod)), 'adaptiveCollins')
+    [propagation, observationGrid] = bessel_adaptive_propagation(inputModes, grid, phase.all, params,zPlan);
+    propagation.diagnostics.estimatedBesselCorePixels = NaN;
+    propagation.diagnostics.afocalSpectrumOver10DegFraction = NaN;
+    propagation.diagnostics.afocalAirSpectrumOver10DegFraction = NaN;
+    if derived.optics.isAfocalLayout && strcmp(derived.axicon.geometry,'circular') && ...
+            abs(derived.optics.beta1Rad) > 0
+        coreRadiusMm = 2.4048255577*params.laser.wavelengthMm/ ...
+            (2*pi*params.material.backgroundIndex*abs(sin(derived.optics.beta1Rad)));
+        propagation.diagnostics.estimatedBesselCorePixels = coreRadiusMm/observationGrid.dxMm;
+    end
+    if derived.optics.isAfocalLayout && ...
+            params.simulation.zRangeMm >= params.optics.lens2PositionMm
+        inputReducedAngle = hypot(grid.kx,grid.ky)/(2*pi/params.laser.wavelengthMm);
+        spectralIntensity = double(inputModes.angularSpectrumIntensity);
+        spectralTotal = sum(spectralIntensity,'all');
+        dMagnitude = abs(params.optics.lens1FocalLengthMm/params.optics.lens2FocalLengthMm);
+        airLimit = params.material.backgroundIndex*sin(deg2rad(10))/dMagnitude;
+        propagation.diagnostics.afocalAirSpectrumOver10DegFraction = ...
+            sum(spectralIntensity(inputReducedAngle > airLimit),'all')/spectralTotal;
+        nAtFinal = params.material.backgroundIndex;
+        if params.optics.sampleEnabled && ...
+                params.simulation.zRangeMm >= params.optics.samplePositionMm
+            nAtFinal = params.material.sampleIndex;
+        end
+        finalLimit = nAtFinal*sin(deg2rad(10))/dMagnitude;
+        propagation.diagnostics.afocalSpectrumOver10DegFraction = ...
+            sum(spectralIntensity(inputReducedAngle > finalLimit),'all')/spectralTotal;
+    end
+    sourceIntegralMm2 = sum(abs(inputModes.referenceEnvelope).^2,'all')*grid.dxMm*grid.dyMm;
+    postprocess = localComputePostprocess(localGetPropagationIntensity(propagation), ...
+        propagation.zValuesMm, observationGrid, params, derived, true, ...
+        inputModes.aperture.transmission, sourceIntegralMm2);
+else
+    propagation = localRunBpmPropagationForModes(inputModes, grid, params, derived);
+    observationGrid = grid;
+    postprocess = localComputePostprocess(localGetPropagationIntensity(propagation), ...
+        propagation.zValuesMm, grid, params, derived, true, inputModes.aperture.transmission);
+end
+propagation.zPlan = zPlan;
 
 results = struct(); % 新建结果结构体
 results.params = params; % 保存完整参数，便于后面绘图/导出统一调用
 results.grid = grid; % 保存网格信息
+results.observationGrid = observationGrid; % 多尺度后端使用的物理观察坐标
 results.derived = derived; % 保存派生量
 results.phase = phase; % 保存所有相位分量
 results.inputEnvelope = inputModes.referenceEnvelope; % 保存输入光束包络
@@ -370,6 +506,7 @@ results.inputIntensity = inputModes.inputIntensity; % 保存 M2 模式混合后�
 results.angularSpectrum = inputModes.referenceAngularSpectrum; % 保存参考 HG00 角谱
 results.angularSpectrumIntensity = inputModes.angularSpectrumIntensity; % 保存 M2 模式混合后的角谱强度
 results.inputModeSummaries = inputModes.modeSummaries; % 保存模式权重，便于检查 M2 近似
+results.aperture = inputModes.aperture; % 保存 SLM 平面的圆孔径 mask 和功率透过率
 results.propagation = propagation; % 保存传播结果
 results.postprocess = postprocess; % 保存后处理结果
 end
@@ -385,6 +522,7 @@ if params.beam.beamQualityM2 < 1
     error('params.beam.beamQualityM2 must be at least 1.');
 end
 
+[apertureMask, apertureEnabled] = localBuildApertureMask(grid, params.phase.apertureRadiusMm);
 phaseFactor = exp(1i * phase.all);
 if strcmp(derived.beam.qualityModelKey, 'effectiveGaussian')
     referenceWaistRadiusMm = derived.beam.effectiveWaistRadiusMm;
@@ -393,6 +531,9 @@ else
 end
 referenceEnvelope = params.beam.fieldAmplitude * exp(-(grid.r .^ 2) / referenceWaistRadiusMm ^ 2);
 referenceField = referenceEnvelope .* phaseFactor;
+if apertureEnabled
+    referenceField = referenceField .* apertureMask;
+end
 referenceAngularSpectrum = fftshift(fft2(referenceField));
 referencePower = sum(abs(referenceEnvelope) .^ 2, 'all');
 if referencePower <= 0 || ~isfinite(referencePower)
@@ -402,7 +543,8 @@ end
 modeSpecs = derived.beam.modeSpecs;
 inputIntensity = zeros(grid.N, grid.N);
 angularSpectrumIntensity = zeros(grid.N, grid.N);
-hgModes = struct('label', {}, 'orderX', {}, 'orderY', {}, 'weight', {}, 'field', {});
+hgModes = struct('label', {}, 'orderX', {}, 'orderY', {}, 'weight', {}, ...
+    'field', {}, 'unmaskedField', {});
 
 for modeIndex = 1:numel(modeSpecs)
     rawEnvelope = params.beam.fieldAmplitude * localHermiteGaussianEnvelope( ...
@@ -412,7 +554,11 @@ for modeIndex = 1:numel(modeSpecs)
         error('HG input mode %s has zero or invalid power.', modeSpecs(modeIndex).label);
     end
     envelope = rawEnvelope * sqrt(referencePower / rawPower);
-    modeField = envelope .* phaseFactor;
+    unmaskedModeField = envelope .* phaseFactor;
+    modeField = unmaskedModeField;
+    if apertureEnabled
+        modeField = modeField .* apertureMask;
+    end
     modeAngularSpectrum = fftshift(fft2(modeField));
 
     inputIntensity = inputIntensity + modeSpecs(modeIndex).weight * abs(modeField) .^ 2;
@@ -423,6 +569,7 @@ for modeIndex = 1:numel(modeSpecs)
     hgModes(modeIndex).orderY = modeSpecs(modeIndex).orderY;
     hgModes(modeIndex).weight = modeSpecs(modeIndex).weight;
     hgModes(modeIndex).field = modeField;
+    hgModes(modeIndex).unmaskedField = unmaskedModeField;
 end
 
 switch derived.beam.qualityModelKey
@@ -436,13 +583,17 @@ switch derived.beam.qualityModelKey
         coherentField = zeros(size(referenceField), 'like', referenceField);
         for modeIndex = 1:numel(hgModes)
             relativePhase = localCoherentHgRelativePhase(params, hgModes(modeIndex));
-            coherentField = coherentField + sqrt(hgModes(modeIndex).weight) * exp(1i * relativePhase) * hgModes(modeIndex).field;
+            coherentField = coherentField + sqrt(hgModes(modeIndex).weight) * ...
+                exp(1i * relativePhase) * hgModes(modeIndex).unmaskedField;
         end
         coherentPower = sum(abs(coherentField) .^ 2, 'all');
         if coherentPower <= 0 || ~isfinite(coherentPower)
             error('Coherent HG input field has zero or invalid power.');
         end
         coherentField = coherentField * sqrt(referencePower / coherentPower);
+        if apertureEnabled
+            coherentField = coherentField .* apertureMask;
+        end
         coherentAngularSpectrum = fftshift(fft2(coherentField));
         propagationModes = struct('label', 'coherentHG', 'orderX', NaN, 'orderY', NaN, ...
             'weight', 1, 'field', coherentField);
@@ -456,6 +607,16 @@ switch derived.beam.qualityModelKey
         error('Unknown beamQualityModel: %s', derived.beam.qualityModelKey);
 end
 
+if apertureEnabled
+    apertureTransmission = sum(inputIntensity, 'all') / referencePower;
+else
+    apertureTransmission = 1;
+end
+if ~isfinite(apertureTransmission) || apertureTransmission <= 0
+    error('The aperture blocks all sampled input power. Increase apertureRadiusMm or simulation.N.');
+end
+apertureTransmission = min(apertureTransmission, 1);
+
 inputModes = struct();
 inputModes.referenceEnvelope = referenceEnvelope;
 inputModes.referenceField = referenceField;
@@ -464,7 +625,33 @@ inputModes.inputIntensity = inputIntensity;
 inputModes.angularSpectrumIntensity = angularSpectrumIntensity;
 inputModes.modes = propagationModes;
 inputModes.requiresIncoherentSum = requiresIncoherentSum;
-inputModes.modeSummaries = rmfield(hgModes, 'field');
+inputModes.modeSummaries = rmfield(hgModes, {'field', 'unmaskedField'});
+inputModes.aperture = struct( ...
+    'enabled', apertureEnabled, ...
+    'radiusMm', params.phase.apertureRadiusMm, ...
+    'mask', apertureMask, ...
+    'transmission', apertureTransmission, ...
+    'incidentAveragePowerW', params.laser.powerW, ...
+    'transmittedAveragePowerW', params.laser.powerW * apertureTransmission, ...
+    'incidentPulsePeakPowerW', derived.pulsePeakPowerW, ...
+    'transmittedPulsePeakPowerW', derived.pulsePeakPowerW * apertureTransmission);
+end
+
+function [apertureMask, apertureEnabled] = localBuildApertureMask(grid, apertureRadiusMm)
+if ~isnumeric(apertureRadiusMm) || ~isscalar(apertureRadiusMm) || ...
+        ~isfinite(apertureRadiusMm) || apertureRadiusMm < 0
+    error('params.phase.apertureRadiusMm must be a finite nonnegative scalar number.');
+end
+
+apertureEnabled = apertureRadiusMm > 0;
+if apertureEnabled
+    apertureMask = grid.r <= apertureRadiusMm;
+    if ~any(apertureMask, 'all')
+        error('The aperture does not include any grid samples. Increase apertureRadiusMm or simulation.N.');
+    end
+else
+    apertureMask = true(size(grid.r));
+end
 end
 
 function relativePhase = localCoherentHgRelativePhase(params, modeSpec)
@@ -506,7 +693,7 @@ end
 values = current;
 end
 
-function grid = localSetupGrid(simulation)
+function grid = localSetupGrid(simulation,zValuesMm)
 % localSetupGrid
 % 作用：建立实空间坐标、频空间坐标，以及 z 方向采样位置。
 
@@ -532,7 +719,7 @@ grid.fyValuesInvMm = frequencyValuesInvMm; % 保存一维 fy 坐标
 [grid.fx, grid.fy] = meshgrid(grid.fxValuesInvMm, grid.fyValuesInvMm); % 建立频域平面的二维网格
 grid.kx = 2 * pi * grid.fx; % 把空间频率转换成横向波矢分量 kx
 grid.ky = 2 * pi * grid.fy; % 把空间频率转换成横向波矢分量 ky
-grid.zValuesMm = 0:simulation.dzMm:simulation.zRangeMm; % 生成所有 z 方向传播位置
+grid.zValuesMm = zValuesMm; % shared preflight coordinates; no second allocation
 end
 
 function derived = localBuildDerivedQuantities(params)
@@ -548,9 +735,14 @@ derived.kSample = 2 * pi * params.material.sampleIndex / params.laser.wavelength
 derived.pulseEnergyJ = params.laser.powerW / params.laser.repetitionRateHz; % 单脉冲能量 = 平均功率 / 重复频率
 derived.pulsePeakPowerW = derived.pulseEnergyJ / params.laser.pulseWidthS; % 峰值功率 = 单脉冲能量 / 脉宽
 derived.axicon = localResolveAxiconDefinition(params, derived.kBackground); % 把不同 axicon 输入模式统一解析成 kr 和有效锥角 beta
+derived.axicon.geometry = char(string(params.phase.axiconGeometry));
+derived.axicon.orientationDeg = params.phase.axiconOrientationDeg;
 derived.optics = struct(); % 新建一个 optics 子结构体，用来存和透镜系统有关的派生量
 derived.optics.alphaRad = derived.axicon.physicalBaseAngleRad; % 兼容旧字段名：真实 axicon 底角 alpha
 derived.optics.M = params.optics.lens2FocalLengthMm / params.optics.lens1FocalLengthMm; % 两片透镜组成的缩放倍率 M=f2/f1
+derived.optics.isAfocalLayout = params.optics.lens1Enabled && params.optics.lens2Enabled && ...
+    abs(params.optics.lens2PositionMm-params.optics.lens1PositionMm- ...
+    params.optics.lens1FocalLengthMm-params.optics.lens2FocalLengthMm) < 1e-8;
 derived.optics.M2 = derived.optics.M ^ 2; % 缩放倍率平方 M2，用于材料内长度缩放
 derived.optics.magnification = derived.optics.M; % 兼容旧字段名
 derived.optics.beta0Rad = derived.axicon.coneAngleRad; % beta_0 现在表示全息 axicon 的有效出射锥角
@@ -675,8 +867,12 @@ if ~any(strcmp(mode, validModes))
     error('params.phase.axiconMode must be coneAngle, radialPeriodMm, radialPeriodPx, radialCycles, or physicalEquivalent.');
 end
 
-gridPixelPitchMm = params.simulation.sizeMm / params.simulation.N; % 当前输出相位矩阵的像素间距，单位 mm/pixel
-gridRadiusMm = params.simulation.sizeMm / 2; % axiconRadialCycles 中 rho=1 对应的真实半径
+gridPixelPitchMm = params.phase.referencePixelPitchMm; % 独立于计算采样的物理参考像素间距
+gridRadiusMm = params.phase.referenceRadiusMm; % axiconRadialCycles 中 rho=1 对应的固定物理半径
+if ~isscalar(gridPixelPitchMm) || ~isfinite(gridPixelPitchMm) || gridPixelPitchMm <= 0 || ...
+        ~isscalar(gridRadiusMm) || ~isfinite(gridRadiusMm) || gridRadiusMm <= 0
+    error('phase.referencePixelPitchMm and phase.referenceRadiusMm must be positive finite scalars.');
+end
 physicalBaseAngleRad = deg2rad(params.phase.axiconAngleDeg); % 真实 axicon 等效模式使用的底角 alpha
 
 switch mode
@@ -762,25 +958,47 @@ if ~isfinite(krRadPerMm) || abs(krRadPerMm) >= kBackground
 end
 end
 
-function phaseMap = localBuildBesselVortexPhase(grid, kBackground, betaDeg, vortexCharge, betaParamName)
+function phaseMap = localBuildBesselVortexPhase(grid, kBackground, betaDeg, vortexCharge, betaParamName, referenceRadiusMm)
 if ~isnumeric(vortexCharge) || ~isscalar(vortexCharge) || ~isfinite(vortexCharge)
     error('Checkerboard Bessel vortex topological charge must be a finite scalar number.');
 end
 
 krRadPerMm = localConeAngleDegToKr(betaDeg, kBackground, betaParamName);
-phaseMap = krRadPerMm * (grid.sizeMm / 2 - grid.r) + vortexCharge * grid.theta;
+phaseMap = krRadPerMm * (referenceRadiusMm - grid.r) + vortexCharge * grid.theta;
 end
 
-function mask = localBuildCheckerboardMask(sampleCount, tileSizePx)
+function mask = localBuildCheckerboardMask(grid, tileSizePx, referenceRadiusMm, referencePixelPitchMm)
 if ~isnumeric(tileSizePx) || ~isscalar(tileSizePx) || ~isfinite(tileSizePx) || tileSizePx < 1
     error('params.phase.checkerboardTileSizePx must be a positive integer.');
 end
 
 tileSizePx = round(tileSizePx);
-[rowIndices, columnIndices] = ndgrid(1:sampleCount, 1:sampleCount);
-rowTile = floor((rowIndices - 1) / tileSizePx);
-columnTile = floor((columnIndices - 1) / tileSizePx);
+tileWidthMm = tileSizePx*referencePixelPitchMm;
+firstReferenceCenterMm = -referenceRadiusMm+referencePixelPitchMm;
+columnTile = floor((grid.x-firstReferenceCenterMm+eps(referenceRadiusMm))/tileWidthMm);
+rowTile = floor((grid.y-firstReferenceCenterMm+eps(referenceRadiusMm))/tileWidthMm);
 mask = mod(rowTile + columnTile, 2) == 0;
+end
+
+function phaseMap = localBuildAxiconPhase(grid, params, derived)
+geometry = char(string(params.phase.axiconGeometry));
+orientationDeg = params.phase.axiconOrientationDeg;
+if ~isnumeric(orientationDeg) || ~isscalar(orientationDeg) || ~isfinite(orientationDeg)
+    error('params.phase.axiconOrientationDeg must be a finite scalar number.');
+end
+
+switch geometry
+    case 'circular'
+        phaseCoordinateMm = grid.r;
+    case 'linear1D'
+        orientationRad = deg2rad(orientationDeg);
+        normalCoordinateMm = grid.x .* cos(orientationRad) + grid.y .* sin(orientationRad);
+        phaseCoordinateMm = abs(normalCoordinateMm);
+    otherwise
+        error('params.phase.axiconGeometry must be circular or linear1D.');
+end
+
+phaseMap = derived.axicon.krRadPerMm * (params.phase.referenceRadiusMm - phaseCoordinateMm);
 end
 
 function phase = localBuildPhaseMaps(grid, params, derived)
@@ -792,7 +1010,12 @@ function phase = localBuildPhaseMaps(grid, params, derived)
 phase = struct(); % 新建相位结构体
 
 phase.airy = params.phase.airyStrength * ((grid.x ./ params.phase.airyScaleMm) .^ 3 + (grid.y ./ params.phase.airyScaleMm) .^ 3); % Airy 三次相位
-phase.axicon = derived.axicon.krRadPerMm * (grid.sizeMm / 2 - grid.r); % axicon 径向线性相位，统一由解析后的 kr 决定
+phase.axicon = localBuildAxiconPhase(grid, params, derived);
+
+if strcmp(derived.axicon.geometry, 'linear1D') && ...
+        (params.phase.curvedMaxShiftXMm ~= 0 || params.phase.curvedMaxShiftYMm ~= 0)
+    error('curvedMaxShiftXMm/curvedMaxShiftYMm are not supported with linear1D axicon geometry.');
+end
 
 tanConeAngle = tan(derived.axicon.coneAngleRad);
 if tanConeAngle == 0
@@ -804,7 +1027,7 @@ if tanConeAngle == 0
     phase.curvatureAY = 0;
     phase.curve = zeros(size(grid.r));
 else
-    phase.maxPropagationMm = (grid.sizeMm / 2) / abs(tanConeAngle); % 几何近似下的最大无衍射传播距离
+    phase.maxPropagationMm = params.phase.referenceRadiusMm / abs(tanConeAngle); % 固定参考半径的几何距离
     phase.curvatureAX = params.phase.curvedMaxShiftXMm / (phase.maxPropagationMm ^ 2); % 抛物线轨迹 x = A_x z^2 中的曲率系数
     phase.curvatureAY = params.phase.curvedMaxShiftYMm / (phase.maxPropagationMm ^ 2); % 抛物线轨迹 y = A_y z^2 中的曲率系数
     phase.curve = derived.kBackground * (grid.r ./ abs(tanConeAngle)) .* ...
@@ -818,19 +1041,22 @@ phase.checkerboardBessel1 = zeros(size(grid.r));
 phase.checkerboardBessel2 = zeros(size(grid.r));
 phase.checkerboardBessel = zeros(size(grid.r));
 if params.phase.checkerboardBesselEnabled
-    phase.checkerboardMask = localBuildCheckerboardMask(grid.N, params.phase.checkerboardTileSizePx);
+    phase.checkerboardMask = localBuildCheckerboardMask(grid, params.phase.checkerboardTileSizePx, ...
+        params.phase.referenceRadiusMm, params.phase.referencePixelPitchMm);
     phase.checkerboardBessel1 = localBuildBesselVortexPhase( ...
         grid, derived.kBackground, params.phase.checkerboardBeta1Deg, ...
-        params.phase.checkerboardTc1, 'params.phase.checkerboardBeta1Deg');
+        params.phase.checkerboardTc1, 'params.phase.checkerboardBeta1Deg', ...
+        params.phase.referenceRadiusMm);
     phase.checkerboardBessel2 = localBuildBesselVortexPhase( ...
         grid, derived.kBackground, params.phase.checkerboardBeta2Deg, ...
-        params.phase.checkerboardTc2, 'params.phase.checkerboardBeta2Deg');
+        params.phase.checkerboardTc2, 'params.phase.checkerboardBeta2Deg', ...
+        params.phase.referenceRadiusMm);
     phase.checkerboardBessel = phase.checkerboardBessel2;
     phase.checkerboardBessel(phase.checkerboardMask) = ...
         phase.checkerboardBessel1(phase.checkerboardMask);
 end
 
-phase.rho = grid.r ./ (grid.sizeMm / 2); % 归一化半径 rho，方便定义径向 chirp
+phase.rho = grid.r ./ params.phase.referenceRadiusMm; % 固定物理参考半径定义的 rho
 phase.radialChirp = 2 * pi * ( ... % 径向 chirp 相位，形式上是关于 rho 的二次函数
     params.phase.omegaInner .* phase.rho + ... % 中心频率项
     0.5 * (params.phase.omegaOuter - params.phase.omegaInner) .* phase.rho .^ 2); % 频率从中心到边缘逐渐变化的项
@@ -999,7 +1225,7 @@ propagation.lens2AppliedAtMm = lens2AppliedAtMm; % 保存第二片透镜的实�
 propagation.sampleAppliedAtMm = sampleAppliedAtMm; % 保存样品开始生效的位置
 end
 
-function postprocess = localComputePostprocess(fieldOrIntensityStack, zValuesMm, grid, params, derived, stackIsIntensity)
+function postprocess = localComputePostprocess(fieldOrIntensityStack, zValuesMm, grid, params, derived, stackIsIntensity, apertureTransmission, sourceIntegralMm2)
 % localComputePostprocess
 % 作用：从三维复场中提取强度、功率密度、轴上曲线、对数图等后处理结果。
 % 注意：这里的功率密度标定仍然沿用了旧代码的“参考切片归一化”思路，
@@ -1007,6 +1233,16 @@ function postprocess = localComputePostprocess(fieldOrIntensityStack, zValuesMm,
 
 if nargin < 6
     stackIsIntensity = false;
+end
+if nargin < 7
+    apertureTransmission = 1;
+end
+if nargin < 8
+    sourceIntegralMm2 = [];
+end
+if ~isnumeric(apertureTransmission) || ~isscalar(apertureTransmission) || ...
+        ~isfinite(apertureTransmission) || apertureTransmission <= 0 || apertureTransmission > 1 + 1e-12
+    error('apertureTransmission must be a finite scalar in the interval (0, 1].');
 end
 if stackIsIntensity
     intensityStack = fieldOrIntensityStack;
@@ -1017,24 +1253,39 @@ end
 postprocess = struct(); % 新建后处理结果结构体
 
 referenceSliceIndex = min(params.output.referenceSliceIndex, size(intensityStack, 3)); % 防止参考切片编号超过 z 切片总数
-referenceSlice = intensityStack(:, :, referenceSliceIndex); % 取参考 z 切片的强度分布
-sumIntensity = sum(referenceSlice, 'all'); % 求参考切片上的总强度
-if sumIntensity <= 0 || ~isfinite(sumIntensity)
-    error('Reference slice has zero or invalid total intensity.');
-end
 pixelAreaMm2 = grid.dxMm * grid.dyMm; % 每个像素对应的物理面积，单位 mm^2
-pixelPowerW = 1 / sumIntensity; % 假设参考切片总强度归一到 1 W 时，单个强度单位对应多少功率
-pixelPowerDensityWPerMm2 = pixelPowerW / pixelAreaMm2; % 把单像素功率换成功率密度，单位 W/mm^2
+if isempty(sourceIntegralMm2)
+    referenceSlice = intensityStack(:, :, referenceSliceIndex);
+    sumIntensity = sum(referenceSlice, 'all');
+    if sumIntensity <= 0 || ~isfinite(sumIntensity)
+        error('Reference slice has zero or invalid total intensity.');
+    end
+    pixelPowerW = apertureTransmission / sumIntensity;
+    pixelPowerDensityWPerMm2 = pixelPowerW / pixelAreaMm2;
+else
+    if ~isscalar(sourceIntegralMm2) || ~isfinite(sourceIntegralMm2) || sourceIntegralMm2 <= 0
+        error('Source normalization integral must be positive and finite.');
+    end
+    pixelPowerDensityWPerMm2 = 1/sourceIntegralMm2;
+    pixelPowerW = pixelPowerDensityWPerMm2*pixelAreaMm2;
+end
 thresholdWPerMm2 = params.material.damageThresholdWPerM2 / 1e6; % 把材料阈值从 W/m^2 转成 W/mm^2；当前默认值对应 7.2e11 W/mm^2
 
 [~, centerRowIndex] = min(abs(grid.yValuesMm)); % SLM 坐标约定下取最靠近 y=0 的采样线
 [~, centerColumnIndex] = min(abs(grid.xValuesMm)); % SLM 坐标约定下取最靠近 x=0 的采样线
 yImageMm = grid.yValuesMm; % y 方向显示坐标，与传播网格保持一致
 zImageMm = reshape(zValuesMm, 1, []); % z 方向显示坐标直接使用传播过程中的真实采样位置
-crossSectionIntensity = reshape(intensityStack(:, centerColumnIndex, :), params.simulation.N, []); % 固定 x=0，提取 y-z 中心截面
+crossSectionIntensity = reshape(intensityStack(:, centerColumnIndex, :), grid.N, []); % 固定 x=0，提取 y-z 中心截面
 crossSectionPowerDensity = crossSectionIntensity .* pixelPowerDensityWPerMm2; % 把二维强度图换成功率密度图
 crossSectionPeakPowerDensity = crossSectionPowerDensity * derived.pulsePeakPowerW; % 再乘峰值功率，得到峰值功率密度估算
 onAxisPeakPowerDensity = crossSectionPeakPowerDensity(centerRowIndex, :); % 再取中心 y 位置，得到轴上峰值功率密度曲线
+
+[normalCrossSectionIntensity, tangentCrossSectionIntensity, normalCoordinateMm, tangentCoordinateMm] = ...
+    localExtractAxiconCrossSections(intensityStack, grid, params, centerRowIndex, centerColumnIndex);
+normalCrossSectionPowerDensity = normalCrossSectionIntensity .* pixelPowerDensityWPerMm2;
+normalCrossSectionPeakPowerDensity = normalCrossSectionPowerDensity * derived.pulsePeakPowerW;
+tangentCrossSectionPowerDensity = tangentCrossSectionIntensity .* pixelPowerDensityWPerMm2;
+tangentCrossSectionPeakPowerDensity = tangentCrossSectionPowerDensity * derived.pulsePeakPowerW;
 
 slicePeakIntensity = zeros(1, size(intensityStack, 3)); % 每个 z 平面内真正的峰值强度，用于和 on-axis 曲线区分
 for sliceIndex = 1:size(intensityStack, 3)
@@ -1046,14 +1297,23 @@ slicePeakPowerDensity = slicePeakIntensity .* pixelPowerDensityWPerMm2 * derived
 [sliceMaxPeakPowerDensity, sliceMaxIndex] = max(slicePeakPowerDensity);
 
 postprocess.referenceSliceIndex = referenceSliceIndex; % 保存参考切片编号
+postprocess.apertureTransmission = apertureTransmission; % 保存孔径后/孔径前的功率比
+postprocess.incidentAveragePowerW = params.laser.powerW; % 孔径前的入射平均功率
+postprocess.transmittedAveragePowerW = params.laser.powerW * apertureTransmission; % 孔径后的平均功率
+postprocess.incidentPulsePeakPowerW = derived.pulsePeakPowerW; % 孔径前的脉冲峰值功率
+postprocess.transmittedPulsePeakPowerW = derived.pulsePeakPowerW * apertureTransmission; % 孔径后的脉冲峰值功率
 postprocess.pixelPowerW = pixelPowerW; % 保存单强度单位对应的功率
 postprocess.pixelAreaMm2 = pixelAreaMm2; % 保存像素物理面积
 postprocess.pixelPowerDensityWPerMm2 = pixelPowerDensityWPerMm2; % 保存单强度单位对应的功率密度
 postprocess.thresholdWPerM2 = params.material.damageThresholdWPerM2; % 保存原始单位下的材料阈值
 postprocess.thresholdWPerMm2 = thresholdWPerMm2; % 保存换算后的材料阈值
-postprocess.unitAssumptions = [ ... % 保存一段文字说明，提醒这套单位处理的假设是什么
-    'Reference slice total intensity is normalized to 1 W CW, then scaled by pulse peak power. ', ... % 第一句说明参考切片归一化方式
-    'Peak power-density plots are reported in W/mm^2. Material threshold is provided in W/m^2 and converted for plotting.']; % 第二句说明画图时单位怎么处理
+if isempty(sourceIntegralMm2)
+    postprocess.unitAssumptions = ['Legacy reference-slice normalization; approximate relative comparison only. ' ...
+        'Peak power density is W/mm^2.'];
+else
+    postprocess.unitAssumptions = ['The incident power is calibrated once at the source. ' ...
+        'Observation ROI clipping is not renormalized. Scalar paraxial model; sample-interface Fresnel loss omitted.'];
+end
 postprocess.midSliceIndex = centerRowIndex; % 兼容旧字段名：保存中心 y 索引
 postprocess.centerRowIndex = centerRowIndex; % 保存中心 y 索引
 postprocess.centerColumnIndex = centerColumnIndex; % 保存中心 x 索引
@@ -1066,12 +1326,53 @@ postprocess.crossSectionPowerDensityWPerMm2 = crossSectionPowerDensity; % 保存
 postprocess.crossSectionPeakPowerDensityWPerMm2 = crossSectionPeakPowerDensity; % 保存中心截面峰值功率密度图
 postprocess.crossSectionIntensityLog = log(1 + crossSectionIntensity); % 保存强度的对数显示版本
 postprocess.crossSectionPeakPowerDensityLog = log(1 + crossSectionPeakPowerDensity); % 保存峰值功率密度的对数显示版本
+postprocess.normalCoordinateMm = normalCoordinateMm;
+postprocess.tangentCoordinateMm = tangentCoordinateMm;
+postprocess.normalCrossSectionIntensity = normalCrossSectionIntensity;
+postprocess.normalCrossSectionPowerDensityWPerMm2 = normalCrossSectionPowerDensity;
+postprocess.normalCrossSectionPeakPowerDensityWPerMm2 = normalCrossSectionPeakPowerDensity;
+postprocess.normalCrossSectionPeakPowerDensityLog = log(1 + normalCrossSectionPeakPowerDensity);
+postprocess.tangentCrossSectionIntensity = tangentCrossSectionIntensity;
+postprocess.tangentCrossSectionPowerDensityWPerMm2 = tangentCrossSectionPowerDensity;
+postprocess.tangentCrossSectionPeakPowerDensityWPerMm2 = tangentCrossSectionPeakPowerDensity;
+postprocess.tangentCrossSectionPeakPowerDensityLog = log(1 + tangentCrossSectionPeakPowerDensity);
 postprocess.onAxisPeakPowerDensityWPerMm2 = onAxisPeakPowerDensity; % 保存轴上峰值功率密度曲线
 postprocess.slicePeakPowerDensityWPerMm2 = slicePeakPowerDensity; % 保存每个 z 平面内的真实峰值功率密度
 postprocess.onAxisMaxPeakPowerDensityWPerMm2 = onAxisMaxPeakPowerDensity; % 保存轴上最大值
 postprocess.onAxisMaxZMm = zImageMm(onAxisMaxIndex); % 保存轴上最大值位置
 postprocess.sliceMaxPeakPowerDensityWPerMm2 = sliceMaxPeakPowerDensity; % 保存全平面峰值的最大值
 postprocess.sliceMaxZMm = zImageMm(sliceMaxIndex); % 保存全平面峰值最大值位置
+end
+
+function [normalSection, tangentSection, normalCoordinateMm, tangentCoordinateMm] = ...
+        localExtractAxiconCrossSections(intensityStack, grid, params, centerRowIndex, centerColumnIndex)
+normalCoordinateMm = grid.xValuesMm;
+tangentCoordinateMm = grid.yValuesMm;
+geometry = char(string(params.phase.axiconGeometry));
+
+if strcmp(geometry, 'circular')
+    normalSection = reshape(intensityStack(centerRowIndex, :, :), grid.N, []);
+    tangentSection = reshape(intensityStack(:, centerColumnIndex, :), grid.N, []);
+    return;
+end
+if ~strcmp(geometry, 'linear1D')
+    error('params.phase.axiconGeometry must be circular or linear1D.');
+end
+
+orientationRad = deg2rad(params.phase.axiconOrientationDeg);
+normalX = normalCoordinateMm .* cos(orientationRad);
+normalY = normalCoordinateMm .* sin(orientationRad);
+tangentX = -tangentCoordinateMm .* sin(orientationRad);
+tangentY = tangentCoordinateMm .* cos(orientationRad);
+normalSection = zeros(grid.N, size(intensityStack, 3));
+tangentSection = zeros(grid.N, size(intensityStack, 3));
+for sliceIndex = 1:size(intensityStack, 3)
+    currentIntensity = intensityStack(:, :, sliceIndex);
+    normalSection(:, sliceIndex) = interp2( ...
+        grid.xValuesMm, grid.yValuesMm, currentIntensity, normalX, normalY, 'linear', 0).';
+    tangentSection(:, sliceIndex) = interp2( ...
+        grid.xValuesMm, grid.yValuesMm, currentIntensity, tangentX, tangentY, 'linear', 0).';
+end
 end
 
 function localPlotResults(results, params)
@@ -1129,22 +1430,24 @@ clf('reset'); % 清掉上一轮图里的隐藏辅助线和色条
 tiledlayout(3, 1, 'Padding', 'none', 'TileSpacing', 'compact'); % 用 3x1 的布局依次排三个剖面图
 
 nexttile; % 切到第 1 个子图
-imagesc(results.postprocess.zImageMm, results.postprocess.yImageMm, results.postprocess.crossSectionPeakPowerDensityLog); % 显示峰值功率密度的对数剖面图
-title('Estimated center y-z peak power density log scale (W/mm^2)'); % 图标题
-localApplyValueColorbar(gca, results.postprocess.crossSectionPeakPowerDensityLog, 'auto'); % 显示带数值的颜色条
+localPlotZSection(results.postprocess.zImageMm, results.postprocess.yImageMm, ...
+    results.postprocess.crossSectionPeakPowerDensityLog);
+title('Fixed x=0 y-z peak power density log scale');
+localApplyValueColorbar(gca, results.postprocess.crossSectionPeakPowerDensityLog, 'auto');
 localPlotActiveMarkers(gca, results, params); % 如果启用了透镜/样品，就在图上画位置线
 axis on; % 保留坐标轴
 xlabel('z (mm)'); % x 轴标签
-ylabel('y (mm)'); % y 轴标签
+ylabel('y (mm)');
 
 nexttile; % 切到第 2 个子图
-imagesc(results.postprocess.zImageMm, results.postprocess.yImageMm, results.postprocess.crossSectionPeakPowerDensityWPerMm2); % 显示线性尺度的峰值功率密度剖面图
-title('Estimated center y-z peak power density (W/mm^2)'); % 图标题
-localApplyValueColorbar(gca, results.postprocess.crossSectionPeakPowerDensityWPerMm2, 'auto'); % 显示带数值的颜色条
+localPlotZSection(results.postprocess.zImageMm, results.postprocess.yImageMm, ...
+    results.postprocess.crossSectionPeakPowerDensityWPerMm2);
+title('Fixed x=0 y-z peak power density (W/mm^2)');
+localApplyValueColorbar(gca, results.postprocess.crossSectionPeakPowerDensityWPerMm2, 'auto');
 localPlotActiveMarkers(gca, results, params); % 如果启用了透镜/样品，就在图上画位置线
 axis on; % 保留坐标轴
 xlabel('z (mm)'); % x 轴标签
-ylabel('y (mm)'); % y 轴标签
+ylabel('y (mm)');
 
 nexttile; % 切到第 3 个子图
 peakPowerDensity = max([results.postprocess.onAxisPeakPowerDensityWPerMm2(:); results.postprocess.slicePeakPowerDensityWPerMm2(:)]); % 找到显示曲线的最大值，方便设坐标范围
@@ -1161,6 +1464,22 @@ ylabel('Power density (W/mm^2)'); % 补上纵坐标标签
 title('Estimated on-axis and slice-peak power density (W/mm^2)'); % 图标题
 legend('Location', 'northeast'); % 区分轴上采样和真实切片峰值
 hold off; % 关闭叠加模式
+end
+
+function localPlotZSection(zValuesMm,yValuesMm,data)
+if numel(zValuesMm) > 2 && ...
+        any(abs(diff(zValuesMm)-diff(zValuesMm(1:2))) > 32*eps(max(1,max(zValuesMm))))
+    [zMesh,yMesh] = meshgrid(zValuesMm,yValuesMm);
+    surface(zMesh,yMesh,zeros(size(data)),data,'EdgeColor','none','FaceColor','interp');
+    view(2);
+else
+    imagesc(zValuesMm,yValuesMm,data);
+end
+view(2);
+set(gca,'YDir','reverse');
+if numel(zValuesMm) == 1
+    xlim(zValuesMm(1)+[-0.5,0.5]);
+end
 end
 
 function localApplyValueColorbar(axHandle, data, scaleMode)
@@ -1398,6 +1717,9 @@ function localExportResults(results, params)
 if params.output.write3DIntensity % 如果允许导出 3D 强度
     localExport3DIntensity(results, params); % 导出三维强度 tif
 end
+if params.output.writeRawIntensity
+    localExportRawIntensity(results, params);
+end
 
 if params.output.writeAllPhase % 如果允许导出总相位
     localExportSlmPhase(results, params); % 导出 SLM 相位 bmp
@@ -1421,21 +1743,95 @@ function localExport3DIntensity(results, params)
 % 作用：把三维强度归一化到 8-bit，并按 z 切片写入一个多页 tif 文件。
 
 intensity3D = localGetPropagationIntensity(results.propagation); % 取出单场传播强度或 M2 模式混合后的总强度
-intensity3D = intensity3D - min(intensity3D(:)); % 把最小值平移到 0
-intensity3D = intensity3D / max(intensity3D(:)); % 再归一化到 [0, 1]
-intensity3D8Bit = uint8(intensity3D * 255); % 最后映射到 8-bit 灰度
+intensityMinimum = min(intensity3D(:));
+intensityMaximum = max(intensity3D(:));
+normalizationSpan = max(double(intensityMaximum)-double(intensityMinimum), eps);
 
-[rowRange, columnRange] = localCenteredCropRanges(size(intensity3D8Bit, 1), size(intensity3D8Bit, 2), params.output.cropHalfWidthPixels); % 计算围绕中心裁剪的行列范围
+[rowRange, columnRange] = localCenteredCropRanges(size(intensity3D, 1), size(intensity3D, 2), params.output.cropHalfWidthPixels); % 计算围绕中心裁剪的行列范围
 fileName = fullfile(params.output.outputDir, localBuild3DFileName(params)); % 生成导出的完整文件路径
+if isfield(results.propagation,'backend') && strcmp(results.propagation.backend,'adaptiveCollins')
+    fileName = fullfile(params.output.outputDir,sprintf( ...
+        'Bessel_ROI_%.6gmm_N%d_%s.tif',results.observationGrid.sizeMm, ...
+        results.observationGrid.N,datestr(now,'yyyymmdd_HHMMSS_FFF')));
+end
 
-for index = 1:size(intensity3D8Bit, 3) % 逐个 z 切片写入 tif
-    currentSlice = squeeze(intensity3D8Bit(rowRange, columnRange, index)); % 取出当前 z 切片对应的二维图像
+for index = 1:size(intensity3D, 3) % 逐个 z 切片写入 tif
+    currentIntensity = double(intensity3D(rowRange,columnRange,index));
+    currentSlice = uint8(255*(currentIntensity-double(intensityMinimum))/normalizationSpan);
     if index == 1 % 如果这是第一页
         imwrite(currentSlice, fileName); % 直接新建 tif 文件
     else % 如果不是第一页
         imwrite(currentSlice, fileName, 'WriteMode', 'append'); % 追加到已有 tif 文件后面
     end
 end
+if isfield(results,'observationGrid')
+    grid = results.observationGrid;
+else
+    grid = results.grid;
+end
+metadata = struct('xMm',grid.xValuesMm(columnRange), ...
+    'yMm',grid.yValuesMm(rowRange), ...
+    'zMm',results.propagation.zValuesMm, ...
+    'rawMinimum',double(intensityMinimum), ...
+    'rawMaximum',double(intensityMaximum), ...
+    'format','8-bit globally scaled display intensity; use raw MAT for quantitative work');
+metadata.simulationParams = params.simulation;
+metadata.zSamplingMetadata = localZSamplingMetadata(results);
+metadata.opticsParams = params.optics;
+metadata.phaseParams = params.phase;
+metadata.beamParams = params.beam;
+metadata.materialParams = params.material;
+metadata.wavelengthMm = params.laser.wavelengthMm;
+[folder,name] = fileparts(fileName);
+metadataFile = fullfile(folder,[name '.json']);
+fileId = fopen(metadataFile,'w','n','UTF-8');
+if fileId == -1
+    error('Could not create TIFF metadata file: %s',metadataFile);
+end
+fileCleanup = onCleanup(@()fclose(fileId));
+fprintf(fileId,'%s',jsonencode(metadata));
+clear fileCleanup;
+end
+
+function localExportRawIntensity(results, params)
+rawIntensity = localGetPropagationIntensity(results.propagation);
+if isfield(results,'observationGrid')
+    grid = results.observationGrid;
+else
+    grid = results.grid;
+end
+xMm = grid.xValuesMm;
+yMm = grid.yValuesMm;
+zMm = results.propagation.zValuesMm;
+zSamplingMetadata = localZSamplingMetadata(results);
+powerDensityScaleWPerMm2 = results.postprocess.pixelPowerDensityWPerMm2 * params.laser.powerW;
+model = char(string(params.simulation.propagationMethod));
+simulationParams = params.simulation;
+opticsParams = params.optics;
+phaseParams = params.phase;
+beamParams = params.beam;
+materialParams = params.material;
+wavelengthMm = params.laser.wavelengthMm;
+fileName = fullfile(params.output.outputDir, ...
+    ['Bessel_raw_intensity_' datestr(now,'yyyymmdd_HHMMSS_FFF') '.mat']);
+save(fileName,'rawIntensity','xMm','yMm','zMm','powerDensityScaleWPerMm2', ...
+    'model','simulationParams','opticsParams','phaseParams','beamParams', ...
+    'materialParams','wavelengthMm','zSamplingMetadata','-v7.3');
+end
+
+function metadata = localZSamplingMetadata(results)
+% Always describe the completed run, even if export controls were edited.
+if isfield(results.propagation,'zPlan')
+    metadata = results.propagation.zPlan;
+else
+    metadata = struct('schemaVersion',1,'mode','uniform');
+end
+metadata.zValuesMm = results.propagation.zValuesMm;
+metadata.zSpacingMm = diff(metadata.zValuesMm);
+metadata.planeCount = numel(metadata.zValuesMm);
+metadata.isUniformZ = isempty(metadata.zSpacingMm) || ...
+    all(abs(metadata.zSpacingMm-metadata.zSpacingMm(1)) <= ...
+    32*eps(max(1,max(metadata.zValuesMm))));
 end
 
 function localExportSlmPhase(results, params)
@@ -1451,7 +1847,11 @@ function localExportHelicalPhase(results, params)
 % localExportHelicalPhase
 % 作用：把 helical 相位单独导出成一张 8-bit 灰度 bmp。
 
-helicalPhase8Bit = localPhaseMatrixToUint8(results.phase.helical); % 把 helical 相位映射到 8-bit
+helicalPhase = results.phase.helical;
+if results.aperture.enabled
+    helicalPhase(~results.aperture.mask) = 0;
+end
+helicalPhase8Bit = localPhaseMatrixToUint8(helicalPhase); % 把 helical 相位映射到 8-bit
 fileName = fullfile(params.output.outputDir, localBuildHelicalPhaseFileName(params)); % 生成导出的完整文件路径
 imwrite(helicalPhase8Bit, fileName); % 把 helical 相位图写入磁盘
 end
@@ -1483,7 +1883,11 @@ for offsetIndex = 1:numel(offsetsDeg) % 逐个 helicalPhaseOffset 导出
     offsetRad = deg2rad(offsetDeg); % 公式中的三角函数需要弧度，所以这里从度转换到弧度
     helicalPhase = params.phase.helicalGamma * cos(helicalArgumentWithoutOffset + offsetRad); % 用当前 offset 重新计算 helical 相位
     totalPhase = basePhaseWithoutHelical + helicalPhase; % 重新组合总 SLM 相位
-    slmPhase8Bit = localPhaseMatrixToUint8(angle(results.inputEnvelope .* exp(1i * totalPhase))); % 映射成 SLM 可用的 8-bit 灰度相位图
+    batchField = results.inputEnvelope .* exp(1i * totalPhase);
+    if results.aperture.enabled
+        batchField = batchField .* results.aperture.mask;
+    end
+    slmPhase8Bit = localPhaseMatrixToUint8(angle(batchField)); % 映射成 SLM 可用的 8-bit 灰度相位图
     fileName = fullfile(batchDir, localBuildHelicalOffsetSlmPhaseFileName(params, offsetDeg)); % 生成当前 offset 对应的文件名
     imwrite(slmPhase8Bit, fileName); % 写出当前 offset 的 bmp 文件
 end
@@ -1606,6 +2010,25 @@ switch mode
     otherwise
         token = ['axiconMode=', mode];
 end
+token = [token, localBuildAxiconGeometryToken(params), localBuildApertureToken(params)];
+end
+
+function token = localBuildAxiconGeometryToken(params)
+geometry = char(string(params.phase.axiconGeometry));
+if strcmp(geometry, 'circular')
+    token = '';
+    return;
+end
+token = [' geometry=', geometry, ...
+    ' orientation=', localBuildAngleToken(params.phase.axiconOrientationDeg), 'deg'];
+end
+
+function token = localBuildApertureToken(params)
+if params.phase.apertureRadiusMm == 0
+    token = '';
+    return;
+end
+token = [' apertureR=', num2str(params.phase.apertureRadiusMm), 'mm'];
 end
 
 function token = localBuildCheckerboardBesselToken(params)

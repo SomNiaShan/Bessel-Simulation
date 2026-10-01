@@ -37,6 +37,8 @@ E_3D_BPM = results.propagation.E3D; % BPM 传播得到的三维复场
 phase_all = results.phase.all; % 叠加后的总相位
 phase_helical = results.phase.helical; % 单独的 helical 相位
 phase_checkerboard_bessel = results.phase.checkerboardBessel; % 棋盘 Bessel vortex 相位
+aperture_mask = results.aperture.mask; % SLM 平面的圆形振幅孔径 mask
+aperture_transmission = results.aperture.transmission; % 孔径后/孔径前的功率比
 output_dir = params.output.outputDir; % 输出目录，保留成工作区变量方便你查看
 
 if params.output.plotFigures % 如果允许绘图
@@ -74,6 +76,9 @@ params.beam = struct( ... % 与入射光束横向包络有关的参数
 params.phase = struct( ... % 与相位构造有关的参数
     'airyStrength', 0, ... % Airy 三次相位的强度系数；0 表示关闭
     'airyScaleMm', 1, ... % Airy 相位里的尺度参数，单位 mm
+    'apertureRadiusMm', 0, ... % Circular amplitude-aperture radius at the SLM plane; 0 means fully open
+    'axiconGeometry', 'circular', ... % circular / linear1D; circular preserves the original radial axicon
+    'axiconOrientationDeg', 0, ... % Normal direction of the 1D axicon phase; 0 deg means variation along x
     'axiconMode', 'radialCycles', ... % axicon 定义方式：coneAngle / radialPeriodMm / radialPeriodPx / radialCycles / physicalEquivalent
     'axiconConeAngleDeg', 0.428775541709431, ... % SLM 全息 axicon 的有效出射锥角 beta，单位度
     'axiconRadialPeriodMm', 0.13763659070689, ... % SLM 径向 2pi 相位周期，单位 mm
@@ -253,10 +258,23 @@ phase = localBuildPhaseMaps(grid, params, derived); % 构造所有相位分量�
 
 inputEnvelope = params.beam.fieldAmplitude * exp(-(grid.r .^ 2) / params.beam.waistRadiusMm ^ 2); % 构造高斯振幅包络
 inputField = inputEnvelope .* exp(1i * phase.all); % 把总相位乘到高斯包络上，得到输入复振幅场
+[apertureMask, apertureEnabled] = localBuildApertureMask(grid, params.phase.apertureRadiusMm);
+incidentPowerSamples = sum(abs(inputField) .^ 2, 'all');
+if apertureEnabled
+    inputField = inputField .* apertureMask;
+    apertureTransmission = sum(abs(inputField) .^ 2, 'all') / incidentPowerSamples;
+else
+    apertureTransmission = 1;
+end
+if ~isfinite(apertureTransmission) || apertureTransmission <= 0
+    error('The aperture blocks all sampled input power. Increase apertureRadiusMm or simulation.N.');
+end
+apertureTransmission = min(apertureTransmission, 1);
 angularSpectrum = fftshift(fft2(inputField)); % 对输入场做二维傅里叶变换，得到角谱
 
 propagation = localRunBpmPropagation(inputField, grid, params, derived); % 用 FFT-BPM 做 z 方向传播
-postprocess = localComputePostprocess(propagation.E3D, propagation.zValuesMm, grid, params, derived); % 对传播结果做功率密度等后处理
+postprocess = localComputePostprocess(propagation.E3D, propagation.zValuesMm, ...
+    grid, params, derived, apertureTransmission); % 对传播结果做功率密度等后处理
 
 results = struct(); % 新建结果结构体
 results.params = params; % 保存完整参数，便于后面绘图/导出统一调用
@@ -266,8 +284,34 @@ results.phase = phase; % 保存所有相位分量
 results.inputEnvelope = inputEnvelope; % 保存输入光束包络
 results.inputField = inputField; % 保存输入复场
 results.angularSpectrum = angularSpectrum; % 保存输入场角谱
+results.aperture = struct( ...
+    'enabled', apertureEnabled, ...
+    'radiusMm', params.phase.apertureRadiusMm, ...
+    'mask', apertureMask, ...
+    'transmission', apertureTransmission, ...
+    'incidentAveragePowerW', params.laser.powerW, ...
+    'transmittedAveragePowerW', params.laser.powerW * apertureTransmission, ...
+    'incidentPulsePeakPowerW', derived.pulsePeakPowerW, ...
+    'transmittedPulsePeakPowerW', derived.pulsePeakPowerW * apertureTransmission);
 results.propagation = propagation; % 保存传播结果
 results.postprocess = postprocess; % 保存后处理结果
+end
+
+function [apertureMask, apertureEnabled] = localBuildApertureMask(grid, apertureRadiusMm)
+if ~isnumeric(apertureRadiusMm) || ~isscalar(apertureRadiusMm) || ...
+        ~isfinite(apertureRadiusMm) || apertureRadiusMm < 0
+    error('params.phase.apertureRadiusMm must be a finite nonnegative scalar number.');
+end
+
+apertureEnabled = apertureRadiusMm > 0;
+if apertureEnabled
+    apertureMask = grid.r <= apertureRadiusMm;
+    if ~any(apertureMask, 'all')
+        error('The aperture does not include any grid samples. Increase apertureRadiusMm or simulation.N.');
+    end
+else
+    apertureMask = true(size(grid.r));
+end
 end
 
 function grid = localSetupGrid(simulation)
@@ -311,6 +355,8 @@ derived.kSample = 2 * pi * params.material.sampleIndex / params.laser.wavelength
 derived.pulseEnergyJ = params.laser.powerW / params.laser.repetitionRateHz; % 单脉冲能量 = 平均功率 / 重复频率
 derived.pulsePeakPowerW = derived.pulseEnergyJ / params.laser.pulseWidthS; % 峰值功率 = 单脉冲能量 / 脉宽
 derived.axicon = localResolveAxiconDefinition(params, derived.kBackground); % 把不同 axicon 输入模式统一解析成 kr 和有效锥角 beta
+derived.axicon.geometry = char(string(params.phase.axiconGeometry));
+derived.axicon.orientationDeg = params.phase.axiconOrientationDeg;
 
 derived.optics = struct(); % 新建一个 optics 子结构体，用来存和透镜系统有关的派生量
 derived.optics.alphaRad = derived.axicon.physicalBaseAngleRad; % 兼容旧字段名：真实 axicon 底角 alpha
@@ -453,6 +499,27 @@ columnTile = floor((columnIndices - 1) / tileSizePx);
 mask = mod(rowTile + columnTile, 2) == 0;
 end
 
+function phaseMap = localBuildAxiconPhase(grid, params, derived)
+geometry = char(string(params.phase.axiconGeometry));
+orientationDeg = params.phase.axiconOrientationDeg;
+if ~isnumeric(orientationDeg) || ~isscalar(orientationDeg) || ~isfinite(orientationDeg)
+    error('params.phase.axiconOrientationDeg must be a finite scalar number.');
+end
+
+switch geometry
+    case 'circular'
+        phaseCoordinateMm = grid.r;
+    case 'linear1D'
+        orientationRad = deg2rad(orientationDeg);
+        normalCoordinateMm = grid.x .* cos(orientationRad) + grid.y .* sin(orientationRad);
+        phaseCoordinateMm = abs(normalCoordinateMm);
+    otherwise
+        error('params.phase.axiconGeometry must be circular or linear1D.');
+end
+
+phaseMap = derived.axicon.krRadPerMm * (grid.sizeMm / 2 - phaseCoordinateMm);
+end
+
 function phase = localBuildPhaseMaps(grid, params, derived)
 % localBuildPhaseMaps
 % 作用：计算所有相位分量，包括：
@@ -462,7 +529,12 @@ function phase = localBuildPhaseMaps(grid, params, derived)
 phase = struct(); % 新建相位结构体
 
 phase.airy = params.phase.airyStrength * ((grid.x ./ params.phase.airyScaleMm) .^ 3 + (grid.y ./ params.phase.airyScaleMm) .^ 3); % Airy 三次相位
-phase.axicon = derived.axicon.krRadPerMm * (grid.sizeMm / 2 - grid.r); % axicon 径向线性相位，统一由解析后的 kr 决定
+phase.axicon = localBuildAxiconPhase(grid, params, derived);
+
+if strcmp(derived.axicon.geometry, 'linear1D') && ...
+        (params.phase.curvedMaxShiftXMm ~= 0 || params.phase.curvedMaxShiftYMm ~= 0)
+    error('curvedMaxShiftXMm/curvedMaxShiftYMm are not supported with linear1D axicon geometry.');
+end
 
 tanConeAngle = tan(derived.axicon.coneAngleRad);
 if tanConeAngle == 0
@@ -604,13 +676,18 @@ propagation.lens2AppliedAtMm = lens2AppliedAtMm; % 保存第二片透镜的实�
 propagation.sampleAppliedAtMm = sampleAppliedAtMm; % 保存样品开始生效的位置
 end
 
-function postprocess = localComputePostprocess(fieldStack, zValuesMm, grid, params, derived)
+function postprocess = localComputePostprocess(fieldStack, zValuesMm, grid, params, derived, apertureTransmission)
 % localComputePostprocess
 % 作用：从三维复场中提取强度、功率密度、轴上曲线、对数图等后处理结果。
 % 注意：这里的功率密度标定仍然沿用了旧代码的“参考切片归一化”思路，
 % 它更适合作为相对比较和参考，不建议直接把它当作严格实验绝对值。
 
 postprocess = struct(); % 新建后处理结果结构体
+
+if ~isnumeric(apertureTransmission) || ~isscalar(apertureTransmission) || ...
+        ~isfinite(apertureTransmission) || apertureTransmission <= 0 || apertureTransmission > 1 + 1e-12
+    error('apertureTransmission must be a finite scalar in the interval (0, 1].');
+end
 
 referenceSliceIndex = min(params.output.referenceSliceIndex, size(fieldStack, 3)); % 防止参考切片编号超过 z 切片总数
 referenceSlice = abs(fieldStack(:, :, referenceSliceIndex)) .^ 2; % 取参考 z 切片的强度分布
@@ -619,7 +696,7 @@ if sumIntensity <= 0 || ~isfinite(sumIntensity)
     error('Reference slice has zero or invalid total intensity.');
 end
 pixelAreaMm2 = grid.dxMm * grid.dyMm; % 每个像素对应的物理面积，单位 mm^2
-pixelPowerW = 1 / sumIntensity; % 假设参考切片总强度归一到 1 W 时，单个强度单位对应多少功率
+pixelPowerW = apertureTransmission / sumIntensity; % 以1 W 孔径前入射功率为基准，保留被孔径挡掉的功率损耗
 pixelPowerDensityWPerMm2 = pixelPowerW / pixelAreaMm2; % 把单像素功率换成功率密度，单位 W/mm^2
 thresholdWPerMm2 = params.material.damageThresholdWPerM2 / 1e6; % 把材料阈值从 W/m^2 转成 W/mm^2；当前默认值对应 7.2e11 W/mm^2
 
@@ -632,6 +709,13 @@ crossSectionPowerDensity = crossSectionIntensity .* pixelPowerDensityWPerMm2; % 
 crossSectionPeakPowerDensity = crossSectionPowerDensity * derived.pulsePeakPowerW; % 再乘峰值功率，得到峰值功率密度估算
 onAxisPeakPowerDensity = crossSectionPeakPowerDensity(centerRowIndex, :); % 再取中心 y 位置，得到轴上峰值功率密度曲线
 
+[normalCrossSectionIntensity, tangentCrossSectionIntensity, normalCoordinateMm, tangentCoordinateMm] = ...
+    localExtractAxiconCrossSections(fieldStack, grid, params, centerRowIndex, centerColumnIndex);
+normalCrossSectionPowerDensity = normalCrossSectionIntensity .* pixelPowerDensityWPerMm2;
+normalCrossSectionPeakPowerDensity = normalCrossSectionPowerDensity * derived.pulsePeakPowerW;
+tangentCrossSectionPowerDensity = tangentCrossSectionIntensity .* pixelPowerDensityWPerMm2;
+tangentCrossSectionPeakPowerDensity = tangentCrossSectionPowerDensity * derived.pulsePeakPowerW;
+
 slicePeakIntensity = zeros(1, size(fieldStack, 3)); % 每个 z 平面内真正的峰值强度，用于和 on-axis 曲线区分
 for sliceIndex = 1:size(fieldStack, 3)
     currentIntensity = abs(fieldStack(:, :, sliceIndex)) .^ 2;
@@ -642,13 +726,18 @@ slicePeakPowerDensity = slicePeakIntensity .* pixelPowerDensityWPerMm2 * derived
 [sliceMaxPeakPowerDensity, sliceMaxIndex] = max(slicePeakPowerDensity);
 
 postprocess.referenceSliceIndex = referenceSliceIndex; % 保存参考切片编号
+postprocess.apertureTransmission = apertureTransmission; % 保存孔径后/孔径前的功率比
+postprocess.incidentAveragePowerW = params.laser.powerW; % 孔径前的入射平均功率
+postprocess.transmittedAveragePowerW = params.laser.powerW * apertureTransmission; % 孔径后的平均功率
+postprocess.incidentPulsePeakPowerW = derived.pulsePeakPowerW; % 孔径前的脉冲峰值功率
+postprocess.transmittedPulsePeakPowerW = derived.pulsePeakPowerW * apertureTransmission; % 孔径后的脉冲峰值功率
 postprocess.pixelPowerW = pixelPowerW; % 保存单强度单位对应的功率
 postprocess.pixelAreaMm2 = pixelAreaMm2; % 保存像素物理面积
 postprocess.pixelPowerDensityWPerMm2 = pixelPowerDensityWPerMm2; % 保存单强度单位对应的功率密度
 postprocess.thresholdWPerM2 = params.material.damageThresholdWPerM2; % 保存原始单位下的材料阈值
 postprocess.thresholdWPerMm2 = thresholdWPerMm2; % 保存换算后的材料阈值
 postprocess.unitAssumptions = [ ... % 保存一段文字说明，提醒这套单位处理的假设是什么
-    'Reference slice total intensity is normalized to 1 W CW, then scaled by pulse peak power. ', ... % 第一句说明参考切片归一化方式
+    'laser.powerW is the incident power before the aperture. Reference-slice scaling preserves aperture transmission. ', ...
     'Peak power-density plots are reported in W/mm^2. Material threshold is provided in W/m^2 and converted for plotting.']; % 第二句说明画图时单位怎么处理
 postprocess.midSliceIndex = centerRowIndex; % 兼容旧字段名：保存中心 y 索引
 postprocess.centerRowIndex = centerRowIndex; % 保存中心 y 索引
@@ -662,12 +751,53 @@ postprocess.crossSectionPowerDensityWPerMm2 = crossSectionPowerDensity; % 保存
 postprocess.crossSectionPeakPowerDensityWPerMm2 = crossSectionPeakPowerDensity; % 保存中心截面峰值功率密度图
 postprocess.crossSectionIntensityLog = log(1 + crossSectionIntensity); % 保存强度的对数显示版本
 postprocess.crossSectionPeakPowerDensityLog = log(1 + crossSectionPeakPowerDensity); % 保存峰值功率密度的对数显示版本
+postprocess.normalCoordinateMm = normalCoordinateMm;
+postprocess.tangentCoordinateMm = tangentCoordinateMm;
+postprocess.normalCrossSectionIntensity = normalCrossSectionIntensity;
+postprocess.normalCrossSectionPowerDensityWPerMm2 = normalCrossSectionPowerDensity;
+postprocess.normalCrossSectionPeakPowerDensityWPerMm2 = normalCrossSectionPeakPowerDensity;
+postprocess.normalCrossSectionPeakPowerDensityLog = log(1 + normalCrossSectionPeakPowerDensity);
+postprocess.tangentCrossSectionIntensity = tangentCrossSectionIntensity;
+postprocess.tangentCrossSectionPowerDensityWPerMm2 = tangentCrossSectionPowerDensity;
+postprocess.tangentCrossSectionPeakPowerDensityWPerMm2 = tangentCrossSectionPeakPowerDensity;
+postprocess.tangentCrossSectionPeakPowerDensityLog = log(1 + tangentCrossSectionPeakPowerDensity);
 postprocess.onAxisPeakPowerDensityWPerMm2 = onAxisPeakPowerDensity; % 保存轴上峰值功率密度曲线
 postprocess.slicePeakPowerDensityWPerMm2 = slicePeakPowerDensity; % 保存每个 z 平面内的真实峰值功率密度
 postprocess.onAxisMaxPeakPowerDensityWPerMm2 = onAxisMaxPeakPowerDensity; % 保存轴上最大值
 postprocess.onAxisMaxZMm = zImageMm(onAxisMaxIndex); % 保存轴上最大值位置
 postprocess.sliceMaxPeakPowerDensityWPerMm2 = sliceMaxPeakPowerDensity; % 保存全平面峰值的最大值
 postprocess.sliceMaxZMm = zImageMm(sliceMaxIndex); % 保存全平面峰值最大值位置
+end
+
+function [normalSection, tangentSection, normalCoordinateMm, tangentCoordinateMm] = ...
+        localExtractAxiconCrossSections(fieldStack, grid, params, centerRowIndex, centerColumnIndex)
+normalCoordinateMm = grid.xValuesMm;
+tangentCoordinateMm = grid.yValuesMm;
+geometry = char(string(params.phase.axiconGeometry));
+
+if strcmp(geometry, 'circular')
+    normalSection = reshape(abs(fieldStack(centerRowIndex, :, :)) .^ 2, grid.N, []);
+    tangentSection = reshape(abs(fieldStack(:, centerColumnIndex, :)) .^ 2, grid.N, []);
+    return;
+end
+if ~strcmp(geometry, 'linear1D')
+    error('params.phase.axiconGeometry must be circular or linear1D.');
+end
+
+orientationRad = deg2rad(params.phase.axiconOrientationDeg);
+normalX = normalCoordinateMm .* cos(orientationRad);
+normalY = normalCoordinateMm .* sin(orientationRad);
+tangentX = -tangentCoordinateMm .* sin(orientationRad);
+tangentY = tangentCoordinateMm .* cos(orientationRad);
+normalSection = zeros(grid.N, size(fieldStack, 3));
+tangentSection = zeros(grid.N, size(fieldStack, 3));
+for sliceIndex = 1:size(fieldStack, 3)
+    currentIntensity = abs(fieldStack(:, :, sliceIndex)) .^ 2;
+    normalSection(:, sliceIndex) = interp2( ...
+        grid.xValuesMm, grid.yValuesMm, currentIntensity, normalX, normalY, 'linear', 0).';
+    tangentSection(:, sliceIndex) = interp2( ...
+        grid.xValuesMm, grid.yValuesMm, currentIntensity, tangentX, tangentY, 'linear', 0).';
+end
 end
 
 function localPlotResults(results, params)
@@ -725,22 +855,22 @@ clf('reset'); % 清掉上一轮图里的隐藏辅助线和色条
 tiledlayout(3, 1, 'Padding', 'none', 'TileSpacing', 'compact'); % 用 3x1 的布局依次排三个剖面图
 
 nexttile; % 切到第 1 个子图
-imagesc(results.postprocess.zImageMm, results.postprocess.yImageMm, results.postprocess.crossSectionPeakPowerDensityLog); % 显示峰值功率密度的对数剖面图
-title('Estimated center y-z peak power density log scale (W/mm^2)'); % 图标题
-localApplyValueColorbar(gca, results.postprocess.crossSectionPeakPowerDensityLog, 'auto'); % 显示带数值的颜色条
+imagesc(results.postprocess.zImageMm, results.postprocess.yImageMm, results.postprocess.crossSectionPeakPowerDensityLog);
+title('Fixed x=0 y-z peak power density log scale');
+localApplyValueColorbar(gca, results.postprocess.crossSectionPeakPowerDensityLog, 'auto');
 localPlotActiveMarkers(gca, results, params); % 如果启用了透镜/样品，就在图上画位置线
 axis on; % 保留坐标轴
 xlabel('z (mm)'); % x 轴标签
-ylabel('y (mm)'); % y 轴标签
+ylabel('y (mm)');
 
 nexttile; % 切到第 2 个子图
-imagesc(results.postprocess.zImageMm, results.postprocess.yImageMm, results.postprocess.crossSectionPeakPowerDensityWPerMm2); % 显示线性尺度的峰值功率密度剖面图
-title('Estimated center y-z peak power density (W/mm^2)'); % 图标题
-localApplyValueColorbar(gca, results.postprocess.crossSectionPeakPowerDensityWPerMm2, 'auto'); % 显示带数值的颜色条
+imagesc(results.postprocess.zImageMm, results.postprocess.yImageMm, results.postprocess.crossSectionPeakPowerDensityWPerMm2);
+title('Fixed x=0 y-z peak power density (W/mm^2)');
+localApplyValueColorbar(gca, results.postprocess.crossSectionPeakPowerDensityWPerMm2, 'auto');
 localPlotActiveMarkers(gca, results, params); % 如果启用了透镜/样品，就在图上画位置线
 axis on; % 保留坐标轴
 xlabel('z (mm)'); % x 轴标签
-ylabel('y (mm)'); % y 轴标签
+ylabel('y (mm)');
 
 nexttile; % 切到第 3 个子图
 peakPowerDensity = max([results.postprocess.onAxisPeakPowerDensityWPerMm2(:); results.postprocess.slicePeakPowerDensityWPerMm2(:)]); % 找到显示曲线的最大值，方便设坐标范围
@@ -1034,7 +1164,11 @@ function localExportHelicalPhase(results, params)
 % localExportHelicalPhase
 % 作用：把 helical 相位单独导出成一张 8-bit 灰度 bmp。
 
-helicalPhase8Bit = localPhaseMatrixToUint8(results.phase.helical); % 把 helical 相位映射到 8-bit
+helicalPhase = results.phase.helical;
+if results.aperture.enabled
+    helicalPhase(~results.aperture.mask) = 0;
+end
+helicalPhase8Bit = localPhaseMatrixToUint8(helicalPhase); % 把 helical 相位映射到 8-bit
 fileName = fullfile(params.output.outputDir, localBuildHelicalPhaseFileName(params)); % 生成导出的完整文件路径
 imwrite(helicalPhase8Bit, fileName); % 把 helical 相位图写入磁盘
 end
@@ -1066,7 +1200,11 @@ for offsetIndex = 1:numel(offsetsDeg) % 逐个 helicalPhaseOffset 导出
     offsetRad = deg2rad(offsetDeg); % 公式中的三角函数需要弧度，所以这里从度转换到弧度
     helicalPhase = params.phase.helicalGamma * cos(helicalArgumentWithoutOffset + offsetRad); % 用当前 offset 重新计算 helical 相位
     totalPhase = basePhaseWithoutHelical + helicalPhase; % 重新组合总 SLM 相位
-    slmPhase8Bit = localPhaseMatrixToUint8(angle(results.inputEnvelope .* exp(1i * totalPhase))); % 映射成 SLM 可用的 8-bit 灰度相位图
+    batchField = results.inputEnvelope .* exp(1i * totalPhase);
+    if results.aperture.enabled
+        batchField = batchField .* results.aperture.mask;
+    end
+    slmPhase8Bit = localPhaseMatrixToUint8(angle(batchField)); % 映射成 SLM 可用的 8-bit 灰度相位图
     fileName = fullfile(batchDir, localBuildHelicalOffsetSlmPhaseFileName(params, offsetDeg)); % 生成当前 offset 对应的文件名
     imwrite(slmPhase8Bit, fileName); % 写出当前 offset 的 bmp 文件
 end
@@ -1189,6 +1327,25 @@ switch mode
     otherwise
         token = ['axiconMode=', mode];
 end
+token = [token, localBuildAxiconGeometryToken(params), localBuildApertureToken(params)];
+end
+
+function token = localBuildAxiconGeometryToken(params)
+geometry = char(string(params.phase.axiconGeometry));
+if strcmp(geometry, 'circular')
+    token = '';
+    return;
+end
+token = [' geometry=', geometry, ...
+    ' orientation=', localBuildAngleToken(params.phase.axiconOrientationDeg), 'deg'];
+end
+
+function token = localBuildApertureToken(params)
+if params.phase.apertureRadiusMm == 0
+    token = '';
+    return;
+end
+token = [' apertureR=', num2str(params.phase.apertureRadiusMm), 'mm'];
 end
 
 function token = localBuildCheckerboardBesselToken(params)

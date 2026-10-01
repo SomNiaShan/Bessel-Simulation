@@ -15,7 +15,7 @@
 最常改的通常是这几类：
 
 1. `params.phase`
-   这里决定输出光束长什么样，尤其是 `axiconMode` 及其当前主参数、`vortexCharge`、棋盘 Bessel vortex 参数、`helicalGamma`、`helicalOrder`、`omegaInner`、`omegaOuter`。
+   这里决定输出光束长什么样，尤其是 `apertureRadiusMm`、`axiconGeometry`、`axiconMode` 及其当前主参数、`vortexCharge`、棋盘 Bessel vortex 参数、`helicalGamma`、`helicalOrder`、`omegaInner`、`omegaOuter`。
 2. `params.simulation`
    这里决定仿真精度和计算量，尤其是 `N`、`zRangeMm`、`dzMm`。
 3. `params.output`
@@ -45,11 +45,59 @@ run('C:/Users/Shan/Desktop/academic/Bessel-Simulation/src/BPM_drill_AI.m');
 
 ### 1. `params.simulation`
 
+#### App 的局部 z 加密（`adaptiveCollins`）
+
+在左侧 **Z sampling** 页选择 `local`，用表格填写多个
+`[起点 z, 终点 z, 局部 dz]`，单位均为 mm；点击 **Preview sampling**
+可查看实际切片数、有效区间、最小/最大间距和内存估计。
+Simulation 页的 **Base z spacing**（`dzMm`）仍控制基础粗网格。
+每个新增切片都从完整输入场计算；绘图插值不替代传播计算。
+
+| 参数 | 默认值 | 作用 |
+| --- | --- | --- |
+| `zSamplingMode` | `'uniform'` | `uniform` 保持原采样；`local` 启用局部区间和额外平面。 |
+| `zRefinementRegionsMm` | `zeros(0,3)` | K×3 矩阵，每行为 `[start,end,localDz]`。要求 `0≤start<end≤zRangeMm`，`0<localDz≤dzMm`；重叠区间采用最小步长。 |
+| `zExtraPlanesMm` | `[]` | 额外精确观察坐标，例如 `[220.5,221.05]`，必须位于传播范围内。界面接受逗号、分号或空白分隔的数字，支持科学计数法，不执行表达式。 |
+| `maxZPlanes` | `20000` | 生成坐标或强度堆栈前的切片数上限，超限时报错，不自动降低精度。 |
+
+保留基础网格、所有区间端点、启用的透镜/样品位置、传播终点和额外平面。
+由于这些坐标可能不对齐，实际间距可小于填写的局部 dz。
+`uniform` 模式保留未启用的区间设置；切换到 `legacyASM` 会显示提示并
+回到 `uniform`，表格不清空。脚本请求 `legacyASM + local` 会报错。
+`useBPM=false` 时只返回输入平面 z=0。
+
+对 f1=200 mm、f2=10 mm、透镜位于 z=0 和 210 mm 的示例，可先用
+`zRangeMm=250`、`dzMm=1`、区间 `[218,223,0.02]`、额外平面 `220.5`。
+ROI N=512 时为 496 层，强度堆栈约 0.484 GiB；局部 dz=0.01 则为
+746 层、约 0.729 GiB。整个 250 mm 范围使用 dz=0.02 会产生
+12,501 层，单强度堆栈就约 12.208 GiB。
+继续减半局部 dz，比较峰位置、峰值和单峰 FWHM 是否收敛；若峰在
+加密区间边界，先扩大区间。z=220.5 是该例的成像面，不应当作预设峰位置。
+
+`Bessel_Simulation_app_engine('plan',params)` 会返回解析后的参数、
+`zPlan` 与 `memory`，不会运行传播或创建输出文件。
+Run 和预览使用同一份坐标及内存公式；估计包括源数组、强度堆栈与 CZT
+工作数组，但不是 MATLAB 进程真实峰值内存的保证。
+
+TIFF 第 k 页对应 JSON 的 `zMm(k)`。JSON 和原始 MAT 均保存实际运行的
+`zSamplingMetadata`；修改导出前的界面不会重新定义已计算的 z 坐标。
+很多外部三维查看器默认 TIFF 层间距相等，因此定量分析请读 MAT/JSON 的
+实际坐标；沿 z 积分使用 `trapz(zMm,data)`，不要乘一个固定 dz。
+摘要中的最大值指已采样平面内的最大值，切片峰值仅覆盖 xy ROI。
+z 加密不能解决 xy ROI 截断、源平面欠采样或近轴模型的适用范围问题。
+
+2026-10-01 在 MATLAB R2026a 验证：41/41 个测试通过，包含非均匀坐标
+导出与界面切换。上述 N=1080、ROI N=512、M²=1.2 示例中，局部 dz=0.02
+与 0.01 mm 的采样峰分别位于 221.06 和 221.07 mm；峰值相差约
+0.0364%，单峰纵向 FWHM 分别约 0.88001 和 0.88021 mm，相差约
+0.0226%。共同 z 平面的强度数组完全一致。完整对照函数为
+`tests/benchmark_z_refinement.m`，可独立运行；这些收敛结果只针对该示例。
+
 #### `N`
 
 - 含义：横向采样点数，整个计算平面大小是 `N x N`。
 - 调大后：
-  横向分辨率更高，细节更清楚，频域采样也更细。
+  固定 `sizeMm` 时横向分辨率更高，可表示更高的空间频率；频域采样间距仍为 `1/sizeMm`。
 - 调小后：
   计算更快、内存更省，但相位细节和传播结果更容易失真。
 - 直接影响：
@@ -83,15 +131,15 @@ run('C:/Users/Shan/Desktop/academic/Bessel-Simulation/src/BPM_drill_AI.m');
 
 #### `dzMm`
 
-- 含义：BPM 每一步沿 z 推进的步长。
+- 含义：脚本版沿 z 输出/推进的步长。App 的 `adaptiveCollins` 模式使用它指定常规观察面的间距，光学元件另在精确位置计算。
 - 调大后：
-  计算更快，但传播近似更粗。
+  观察面更稀疏、计算更快，但可能漏掉焦区的峰值。
 - 调小后：
-  传播更细致、更稳定，但计算更慢。
+  观察面更密、计算更慢；单纯减小它不能修复横向欠采样或 FFT 周期回卷。
 - 直接影响：
   z 方向采样精度和循环次数。
 - 常见风险：
-  步长过大时，传播误差会变明显。
+  焦区轴向变化快时，需要足够密的观察面；脚本版还会把不在步进网格上的元件延后到下一步。
 
 #### `useBPM`
 
@@ -119,7 +167,7 @@ run('C:/Users/Shan/Desktop/academic/Bessel-Simulation/src/BPM_drill_AI.m');
 
 #### `powerW`
 
-- 含义：平均功率。
+- 含义：圆孔径之前的入射平均功率。
 - 调大后：
   峰值功率估算变大，后处理里的功率密度曲线整体抬高。
 - 调小后：
@@ -195,14 +243,50 @@ run('C:/Users/Shan/Desktop/academic/Bessel-Simulation/src/BPM_drill_AI.m');
 - 调小后：
   Airy 相位变化更快、更陡。
 
+#### `apertureRadiusMm`
+
+- 含义：位于 SLM/输入平面、以光轴为中心的硬边圆形振幅孔径，单位 mm。
+- `0`：
+  完全打开，不对输入场做任何截断，并保持旧仿真结果。
+- `> 0`：
+  当 `sqrt(x^2 + y^2) <= apertureRadiusMm` 时 mask 为 1，否则为 0。孔径外的复振幅场被设为 0，而不是只把相位设为 0。
+- 功率定义：
+  `laser.powerW` 是孔径前功率。程序计算 `results.aperture.transmission`，并用 `powerW * transmission` 作为孔径后平均功率。功率密度后处理保留这个损耗。
+- 数值效果：
+  硬边会产生物理上应有的衍射振铃；孔径过小时需要检查横向网格是否有足够采样点。
+- 实验注意：
+  仅在相位型 SLM 上显示零相位不能挡光。实验中需要实体光阑、振幅调制器，或者把孔径外的光偏转后用空间滤波去除。
+
+#### `axiconGeometry`
+
+- 含义：选择主 axicon 相位的横向几何。
+- `circular`：
+  使用原来的圆对称相位 `phase.axicon = k_r * (R - r)`，其中 `r = sqrt(x^2 + y^2)`。
+- `linear1D`：
+  使用一维 biprism 相位 `phase.axicon = k_r * (R - abs(u))`，形成 Bessel-like light sheet。
+- 默认：
+  `circular`，因此旧参数和旧仿真结果保持不变。
+
+#### `axiconOrientationDeg`
+
+- 含义：`linear1D` 相位法向 `u` 在 x-y 平面内的角度，单位度。
+- 坐标关系：
+  `u = x*cos(gamma) + y*sin(gamma)`，其中 `gamma = axiconOrientationDeg`。
+- `0 deg`：
+  相位沿 x 变化，light sheet 沿 y-z 平面延伸。
+- `90 deg`：
+  相位沿 y 变化，light sheet 沿 x-z 平面延伸。
+- 注意：
+  在 `circular` geometry 下该参数不参与相位计算。
+
 #### `axiconMode`
 
-- 含义：选择 axicon 的主定义方式。
+- 含义：选择 axicon 横向相位斜率的主定义方式；它和 `axiconGeometry` 相互独立。
 - 可选值：
   `coneAngle`、`radialPeriodMm`、`radialPeriodPx`、`radialCycles`、`physicalEquivalent`。
 - 注意：
   程序内部会先把当前模式换算成统一的 `derived.axicon.krRadPerMm` 和
-  `derived.axicon.coneAngleDeg`，后续相位和传播距离只使用这两个等效量。
+  `derived.axicon.coneAngleDeg`，后续 circular 和 linear1D 相位都使用这两个等效量。
   因此多个 axicon 输入参数不会同时生效，只有当前模式对应的参数是主输入。
   在 APP 里，未选中的 axicon 输入框会作为只读等效值随当前主输入自动刷新。
 
@@ -216,15 +300,15 @@ run('C:/Users/Shan/Desktop/academic/Bessel-Simulation/src/BPM_drill_AI.m');
 
 #### `axiconRadialPeriodMm`
 
-- 含义：SLM 径向 `2*pi` 相位周期，单位 mm。
+- 含义：SLM 沿当前 axicon 坐标的 `2*pi` 相位周期，单位 mm。
 - 生效条件：
   `axiconMode = 'radialPeriodMm'`。
 - 调小后：
-  径向相位斜率变大，等效锥角变大。
+  横向相位斜率变大，等效锥角变大。
 
 #### `axiconRadialPeriodPx`
 
-- 含义：SLM 径向 `2*pi` 相位周期，单位为当前输出相位矩阵的像素。
+- 含义：SLM 沿当前 axicon 坐标的 `2*pi` 相位周期，单位为当前输出相位矩阵的像素。
 - 生效条件：
   `axiconMode = 'radialPeriodPx'`。
 - 注意：
@@ -233,7 +317,7 @@ run('C:/Users/Shan/Desktop/academic/Bessel-Simulation/src/BPM_drill_AI.m');
 
 #### `axiconRadialCycles`
 
-- 含义：从光轴中心到归一化半径 `rho = 1` 处的 axicon 径向 `2*pi` 相位周期数。
+- 含义：从光轴中心到计算窗口参考半宽 `R` 的 axicon `2*pi` 相位周期数。
 - 生效条件：
   `axiconMode = 'radialCycles'`。
 - 换算关系：
@@ -242,7 +326,7 @@ run('C:/Users/Shan/Desktop/academic/Bessel-Simulation/src/BPM_drill_AI.m');
   `k_r = 2*pi*axiconRadialCycles/R`。
 - 例子：
   默认 `sizeMm = 8.64 mm` 时，`R = 4.32 mm`；如果 `axiconRadialCycles = 20`，
-  则中心到边缘共有 20 个径向周期，每个周期 `4.32/20 = 0.216 mm`。
+  则中心到参考边缘共有 20 个周期，每个周期 `4.32/20 = 0.216 mm`。
 
 #### `axiconIndex`
 
@@ -268,6 +352,17 @@ run('C:/Users/Shan/Desktop/academic/Bessel-Simulation/src/BPM_drill_AI.m');
   对应方向的弯曲减弱；两个参数都设为 `0` 时回到不弯曲。
 - 常见风险：
   过大时可能得到很强的非对称结构。
+- 限制：
+  当前公式只适用于 `axiconGeometry = 'circular'`。使用 `linear1D` 时两个 shift 都必须为 `0`。
+
+#### light-sheet 传播截面
+
+- App 和脚本默认绘图：
+  使用实验室固定坐标下 `x = 0` 的 y-z 截面，对应 `crossSection...` 字段。改变 `axiconOrientationDeg` 时，可以直接看到旋转后的 light sheet 与该固定平面如何相交。
+- `normalCrossSection...`：
+  沿 axicon 相位法向 `u` 提取的 u-z 截面，用于检查 light-sheet 厚度、旁瓣和传播长度。
+- `tangentCrossSection...`：
+  沿 sheet 切向 `v` 提取的 v-z 截面，用于检查 sheet 面内延展和均匀性。
 
 #### `compensationPhase`
 
@@ -396,7 +491,7 @@ run('C:/Users/Shan/Desktop/academic/Bessel-Simulation/src/BPM_drill_AI.m');
 - 调小后：
   更早插入。
 - 注意：
-  第二片透镜位置是基于它再加 `f1 + f2` 自动算出来的。
+  脚本版的 `lens2PositionMm` 是独立参数，不会随着焦距自动变化。App 中选择 `telescopeLocked` 后，才会按 `lens1PositionMm + f1 + f2` 重设第二片透镜位置。
 
 #### `samplePositionMm`
 
@@ -558,7 +653,7 @@ run('C:/Users/Shan/Desktop/academic/Bessel-Simulation/src/BPM_drill_AI.m');
 - 调小后：
   用更靠前的 z 面做归一化。
 - 注意：
-  这会改变功率密度估算的绝对值标尺，但不改变相对形状。
+  这会改变功率密度估算的绝对值标尺，但不改变相对形状。有限孔径时，归一化系数会额外乘以 aperture transmission，不会把被挡掉的功率补回。
 
 #### `outputDir`
 

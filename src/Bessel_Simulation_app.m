@@ -19,6 +19,8 @@ classdef Bessel_Simulation_app < matlab.apps.AppBase
         LogTextArea
         SummaryTextArea
         BeamModelExplanationTextArea
+        ZControls
+        ZSelectedRows = []
         IsRunning = false
         IsSyncingAxiconControls = false
     end
@@ -27,7 +29,8 @@ classdef Bessel_Simulation_app < matlab.apps.AppBase
         function app = Bessel_Simulation_app
             app.Controls = struct();
             app.ResultAxes = struct();
-            app.Params = Bessel_Simulation_app_engine('defaults');
+            app.ZControls = struct();
+            app.Params = Bessel_Simulation_app_defaults();
             app.createComponents();
             app.populateControls(app.Params);
             app.appendStatus('App ready.');
@@ -67,7 +70,13 @@ classdef Bessel_Simulation_app < matlab.apps.AppBase
                 'N', 'N';
                 'sizeMm', 'sizeMm (mm)';
                 'zRangeMm', 'zRangeMm (mm)';
-                'dzMm', 'dzMm (mm)'});
+                'dzMm', 'Base z spacing (mm)';
+                'propagationMethod', 'Propagation method';
+                'adaptiveOutputN', 'Focus ROI samples';
+                'adaptiveOutputSizeMm', 'Focus ROI size (mm; 0 auto)';
+                'bandLimitASM', 'Band-limit free-space ASM';
+                'maxWorkingGiB', 'Memory budget (GiB)'});
+            app.addZSamplingTab(parameterTabs);
 
             app.addParameterTab(parameterTabs, 'laser', 'Laser', {
                 'wavelengthMm', 'Wavelength (nm)';
@@ -86,11 +95,16 @@ classdef Bessel_Simulation_app < matlab.apps.AppBase
             app.addParameterTab(parameterTabs, 'phase', 'Phase', {
                 'airyStrength', 'airyStrength';
                 'airyScaleMm', 'airyScaleMm (mm)';
+                'apertureRadiusMm', 'Aperture radius (mm)';
+                'referenceRadiusMm', 'Phase reference radius (mm)';
+                'referencePixelPitchMm', 'Phase reference pixel (mm)';
+                'axiconGeometry', 'Axicon geometry';
+                'axiconOrientationDeg', '1D normal angle (deg)';
                 'axiconMode', 'Axicon definition';
                 'axiconConeAngleDeg', 'Cone angle beta (deg)';
-                'axiconRadialPeriodMm', 'Radial period (mm)';
-                'axiconRadialPeriodPx', 'Radial period (px)';
-                'axiconRadialCycles', 'Radial cycles (rho)';
+                'axiconRadialPeriodMm', 'Phase period (mm)';
+                'axiconRadialPeriodPx', 'Phase period (px)';
+                'axiconRadialCycles', 'Cycles to edge';
                 'axiconIndex', 'Axicon refractive index (n)';
                 'axiconAngleDeg', 'Physical base angle alpha (deg)';
                 'curvedMaxShiftXMm', 'curvedMaxShiftX (mm)';
@@ -115,6 +129,8 @@ classdef Bessel_Simulation_app < matlab.apps.AppBase
                 'lens1PositionMm', 'lens1PositionMm (mm)';
                 'lens2PositionMm', 'lens2PositionMm (mm)';
                 'samplePositionMm', 'samplePositionMm (mm)';
+                'layoutMode', 'Lens layout';
+                'sampleOffsetFromLens2Mm', 'Sample offset from L2 (mm)';
                 'lens1Enabled', 'lens1Enabled';
                 'lens2Enabled', 'lens2Enabled';
                 'sampleEnabled', 'sampleEnabled'});
@@ -126,6 +142,7 @@ classdef Bessel_Simulation_app < matlab.apps.AppBase
 
             app.addParameterTab(parameterTabs, 'output', 'Output', {
                 'write3DIntensity', 'write3DIntensity';
+                'writeRawIntensity', 'writeRawIntensity (MAT)';
                 'writeAllPhase', 'writeAllPhase';
                 'writeHelicalPhase', 'writeHelicalPhase';
                 'writeHelicalOffsetSlmBatch', 'writeHelicalOffsetSlmBatch';
@@ -203,6 +220,132 @@ classdef Bessel_Simulation_app < matlab.apps.AppBase
             app.LogTextArea = uitextarea(summaryGrid, 'Editable', 'off');
         end
 
+        function addZSamplingTab(app,parent)
+            tab = uitab(parent,'Title','Z sampling');
+            grid = uigridlayout(tab,[9 2]);
+            grid.ColumnWidth = {'1x','1x'};
+            grid.RowHeight = {30,44,180,30,22,30,30,34,'1x'};
+            grid.Scrollable = 'on';
+            uilabel(grid,'Text','Sampling mode');
+            app.ZControls.mode = uidropdown(grid,'Items',{'uniform','local'}, ...
+                'Tag','zSamplingMode','ValueChangedFcn',@(~,~)app.zSamplingChanged());
+            description = uilabel(grid,'Text', ...
+                'Keep the base grid; add real calculated planes inside these regions. Overlaps use the smallest local dz.', ...
+                'WordWrap','on');
+            description.Layout.Row = 2; description.Layout.Column = [1 2];
+            app.ZControls.regions = uitable(grid,'Data',zeros(0,3), ...
+                'ColumnName',{'Start z (mm)','End z (mm)','Local dz (mm)'}, ...
+                'ColumnEditable',[true true true],'RowName',[], ...
+                'Tag','zRefinementRegionsMm', ...
+                'CellSelectionCallback',@(~,event)app.zRegionSelected(event), ...
+                'CellEditCallback',@(~,~)app.invalidateZPreview());
+            app.ZControls.regions.Layout.Row = 3;
+            app.ZControls.regions.Layout.Column = [1 2];
+            app.ZControls.add = uibutton(grid,'Text','Add region','Tag','zAddRegion', ...
+                'ButtonPushedFcn',@(~,~)app.addZRegion());
+            app.ZControls.add.Layout.Row = 4; app.ZControls.add.Layout.Column = 1;
+            app.ZControls.remove = uibutton(grid,'Text','Remove selected','Tag','zRemoveRegion', ...
+                'ButtonPushedFcn',@(~,~)app.removeZRegion());
+            app.ZControls.remove.Layout.Row = 4; app.ZControls.remove.Layout.Column = 2;
+            label = uilabel(grid,'Text','Extra exact planes (mm; e.g. 220.5, 221.05)');
+            label.Layout.Row = 5; label.Layout.Column = [1 2];
+            app.ZControls.extra = uieditfield(grid,'text','Tag','zExtraPlanesMm', ...
+                'ValueChangedFcn',@(~,~)app.invalidateZPreview());
+            app.ZControls.extra.Layout.Row = 6; app.ZControls.extra.Layout.Column = [1 2];
+            label = uilabel(grid,'Text','Maximum z planes');
+            label.Layout.Row = 7; label.Layout.Column = 1;
+            app.ZControls.cap = uieditfield(grid,'numeric','Value',20000,'Limits',[1 Inf], ...
+                'Tag','maxZPlanes','ValueChangedFcn',@(~,~)app.invalidateZPreview());
+            app.ZControls.cap.Layout.Row = 7; app.ZControls.cap.Layout.Column = 2;
+            app.ZControls.preview = uibutton(grid,'Text','Preview sampling','Tag','zPreview', ...
+                'ButtonPushedFcn',@(~,~)app.previewZSampling());
+            app.ZControls.preview.Layout.Row = 8; app.ZControls.preview.Layout.Column = [1 2];
+            app.ZControls.info = uitextarea(grid,'Editable','off','Tag','zSamplingPreview', ...
+                'Value',{'Click Preview sampling to check actual planes and memory.'});
+            app.ZControls.info.Layout.Row = 9; app.ZControls.info.Layout.Column = [1 2];
+        end
+
+        function zRegionSelected(app,event)
+            if isempty(event.Indices)
+                app.ZSelectedRows = [];
+            else
+                app.ZSelectedRows = unique(event.Indices(:,1));
+            end
+        end
+
+        function addZRegion(app)
+            range = app.Controls.simulation__zRangeMm.Value;
+            dz = app.Controls.simulation__dzMm.Value;
+            if range <= 0, return; end
+            app.ZControls.regions.Data(end+1,:) = [0,range,dz];
+            app.invalidateZPreview();
+        end
+
+        function removeZRegion(app)
+            rows = app.ZSelectedRows;
+            rows = rows(rows >= 1 & rows <= size(app.ZControls.regions.Data,1));
+            if isempty(rows), return; end
+            app.ZControls.regions.Data(rows,:) = [];
+            app.ZSelectedRows = [];
+            app.invalidateZPreview();
+        end
+
+        function zSamplingChanged(app)
+            if strcmp(app.Controls.simulation__propagationMethod.Value,'legacyASM') && ...
+                    strcmp(app.ZControls.mode.Value,'local')
+                app.ZControls.mode.Value = 'uniform';
+                app.appendStatus('legacyASM requires uniform z sampling. Refinement settings are retained.');
+            end
+            app.updateZControlStates();
+            app.invalidateZPreview();
+        end
+
+        function updateZControlStates(app)
+            if isempty(fieldnames(app.ZControls)), return; end
+            enabled = ~app.IsRunning;
+            legacy = strcmp(app.Controls.simulation__propagationMethod.Value,'legacyASM');
+            app.ZControls.mode.Enable = app.onOff(enabled && ~legacy);
+            app.ZControls.cap.Enable = app.onOff(enabled);
+            app.ZControls.preview.Enable = app.onOff(enabled);
+            local = enabled && ~legacy && strcmp(app.ZControls.mode.Value,'local');
+            app.ZControls.regions.Enable = app.onOff(local);
+            app.ZControls.extra.Enable = app.onOff(local);
+            app.ZControls.add.Enable = app.onOff(local && app.Controls.simulation__zRangeMm.Value > 0);
+            app.ZControls.remove.Enable = app.onOff(local);
+        end
+
+        function value = onOff(~,condition)
+            if condition, value = 'on'; else, value = 'off'; end
+        end
+
+        function invalidateZPreview(app)
+            app.ZControls.info.Value = {'Sampling settings changed. Click Preview sampling.'};
+        end
+
+        function previewZSampling(app)
+            try
+                preflight = Bessel_Simulation_app_engine('plan',app.collectParams());
+                plan = preflight.zPlan;
+                lines = {sprintf('Mode: %s; planes: %d (base %d, added %d)', ...
+                    plan.mode,plan.planeCount,plan.basePlaneCount,plan.addedPlaneCount)};
+                if ~isempty(plan.zSpacingMm)
+                    lines{end+1} = sprintf('Actual spacing: %.9g to %.9g mm',plan.minSpacingMm,plan.maxSpacingMm);
+                end
+                for k = 1:size(plan.effectiveSegmentsMm,1)
+                    lines{end+1} = sprintf('%.9g to %.9g mm: dz <= %.9g mm',plan.effectiveSegmentsMm(k,:)); %#ok<AGROW>
+                end
+                if ~isempty(preflight.memory)
+                    m = preflight.memory;
+                    lines{end+1} = sprintf('ROI stack: %.3f GiB; estimated total: %.3f / %.3f GiB', ...
+                        m.intensityStackGiB,m.totalGiB,m.budgetGiB);
+                    if ~m.withinBudget, lines{end+1} = 'Over memory budget: Run will reject these settings.'; end
+                end
+                app.ZControls.info.Value = lines;
+            catch exception
+                app.ZControls.info.Value = {exception.message};
+            end
+        end
+
         function ax = addSquareAxes(app, parent)
             panel = uipanel(parent, 'BorderType', 'none');
             panel.AutoResizeChildren = 'off';
@@ -276,7 +419,13 @@ classdef Bessel_Simulation_app < matlab.apps.AppBase
                 infoLabel.Layout.Row = index;
                 infoLabel.Layout.Column = 2;
 
-                if strcmp(groupName, 'phase') && strcmp(fieldName, 'axiconMode')
+                if strcmp(groupName, 'phase') && strcmp(fieldName, 'axiconGeometry')
+                    control = uidropdown(grid, ...
+                        'Items', app.axiconGeometryOptions(), ...
+                        'Value', char(string(displayValue)), ...
+                        'Tooltip', tooltip, ...
+                        'ValueChangedFcn', @(~, ~)app.axiconGeometryChanged());
+                elseif strcmp(groupName, 'phase') && strcmp(fieldName, 'axiconMode')
                     control = uidropdown(grid, ...
                         'Items', app.axiconModeOptions(), ...
                         'Value', char(string(displayValue)), ...
@@ -288,6 +437,13 @@ classdef Bessel_Simulation_app < matlab.apps.AppBase
                         'Value', char(string(displayValue)), ...
                         'Tooltip', tooltip, ...
                         'ValueChangedFcn', @(~, ~)app.beamQualityModelChanged());
+                elseif strcmp(groupName, 'simulation') && strcmp(fieldName, 'propagationMethod')
+                    control = uidropdown(grid, 'Items', {'adaptiveCollins','legacyASM'}, ...
+                        'Value', char(string(displayValue)), 'Tooltip', tooltip, ...
+                        'ValueChangedFcn',@(~,~)app.zSamplingChanged());
+                elseif strcmp(groupName, 'optics') && strcmp(fieldName, 'layoutMode')
+                    control = uidropdown(grid, 'Items', {'manual','telescopeLocked'}, ...
+                        'Value', char(string(displayValue)), 'Tooltip', tooltip);
                 elseif islogical(value)
                     control = uicheckbox(grid, 'Text', '', 'Value', logical(displayValue), 'Tooltip', tooltip);
                 elseif ischar(value) || isstring(value)
@@ -309,6 +465,10 @@ classdef Bessel_Simulation_app < matlab.apps.AppBase
                 control.Layout.Column = 3;
 
                 app.Controls.(app.controlKey(groupName, fieldName)) = control;
+                control.Tag = app.controlKey(groupName, fieldName);
+                if strcmp(groupName,'simulation') && ~strcmp(fieldName,'propagationMethod')
+                    control.ValueChangedFcn = @(~,~)app.zSamplingChanged();
+                end
             end
 
             if isBeamTab
@@ -362,7 +522,7 @@ classdef Bessel_Simulation_app < matlab.apps.AppBase
 
         function resetButtonPushed(app)
             app.Results = [];
-            app.Params = Bessel_Simulation_app_engine('defaults');
+            app.Params = Bessel_Simulation_app_defaults();
             app.populateControls(app.Params);
             app.appendStatus('Parameters reset to defaults.');
         end
@@ -449,6 +609,10 @@ classdef Bessel_Simulation_app < matlab.apps.AppBase
                     end
                 end
             end
+            params.simulation.zSamplingMode = app.ZControls.mode.Value;
+            params.simulation.zRefinementRegionsMm = app.ZControls.regions.Data;
+            params.simulation.zExtraPlanesMm = bessel_parse_z_planes(app.ZControls.extra.Value);
+            params.simulation.maxZPlanes = app.ZControls.cap.Value;
             params = app.normalizeAndValidateParams(params);
         end
 
@@ -500,6 +664,7 @@ classdef Bessel_Simulation_app < matlab.apps.AppBase
         function params = suppressRunOutput(~, params)
             outputActionFields = {
                 'write3DIntensity';
+                'writeRawIntensity';
                 'writeAllPhase';
                 'writeHelicalPhase';
                 'writeHelicalOffsetSlmBatch';
@@ -523,6 +688,7 @@ classdef Bessel_Simulation_app < matlab.apps.AppBase
 
         function hasAction = hasSelectedOutputAction(~, outputParams)
             hasAction = outputParams.write3DIntensity || ...
+                outputParams.writeRawIntensity || ...
                 outputParams.writeAllPhase || ...
                 outputParams.writeHelicalPhase || ...
                 outputParams.writeHelicalOffsetSlmBatch || ...
@@ -535,6 +701,7 @@ classdef Bessel_Simulation_app < matlab.apps.AppBase
 
             integerFields = {
                 'simulation', 'N';
+                'simulation', 'adaptiveOutputN';
                 'phase', 'checkerboardTileSizePx';
                 'output', 'cropHalfWidthPixels';
                 'output', 'referenceSliceIndex'};
@@ -562,6 +729,13 @@ classdef Bessel_Simulation_app < matlab.apps.AppBase
             if params.simulation.sizeMm <= 0 || params.simulation.dzMm <= 0 || params.simulation.zRangeMm < 0
                 error('Simulation sizeMm and dzMm must be positive, and zRangeMm must be nonnegative.');
             end
+            if ~any(strcmp(params.simulation.propagationMethod, {'adaptiveCollins','legacyASM'}))
+                error('propagationMethod must be adaptiveCollins or legacyASM.');
+            end
+            if params.simulation.adaptiveOutputN < 2 || params.simulation.adaptiveOutputSizeMm < 0 || ...
+                    params.simulation.maxWorkingGiB <= 0
+                error('Adaptive output N must be >=2, ROI size >=0, and memory budget >0.');
+            end
             if params.laser.wavelengthMm <= 0
                 error('Wavelength must be positive.');
             end
@@ -577,6 +751,12 @@ classdef Bessel_Simulation_app < matlab.apps.AppBase
             if params.phase.airyScaleMm == 0
                 error('params.phase.airyScaleMm must be nonzero.');
             end
+            if params.phase.apertureRadiusMm < 0
+                error('params.phase.apertureRadiusMm must be nonnegative. Use 0 for a fully open aperture.');
+            end
+            if params.phase.referenceRadiusMm <= 0 || params.phase.referencePixelPitchMm <= 0
+                error('Phase reference radius and pixel pitch must be positive.');
+            end
             if params.phase.checkerboardBesselEnabled
                 if params.phase.checkerboardTileSizePx < 1
                     error('params.phase.checkerboardTileSizePx must be at least 1 when checkerboard Bessel phase is enabled.');
@@ -587,6 +767,13 @@ classdef Bessel_Simulation_app < matlab.apps.AppBase
             end
             if ~any(strcmp(params.phase.axiconMode, app.axiconModeOptions()))
                 error('params.phase.axiconMode must be coneAngle, radialPeriodMm, radialPeriodPx, radialCycles, or physicalEquivalent.');
+            end
+            if ~any(strcmp(params.phase.axiconGeometry, app.axiconGeometryOptions()))
+                error('params.phase.axiconGeometry must be circular or linear1D.');
+            end
+            if strcmp(params.phase.axiconGeometry, 'linear1D') && ...
+                    (params.phase.curvedMaxShiftXMm ~= 0 || params.phase.curvedMaxShiftYMm ~= 0)
+                error('Set curvedMaxShiftXMm and curvedMaxShiftYMm to 0 when axiconGeometry is linear1D.');
             end
             if params.material.backgroundIndex <= 0 || params.material.sampleIndex <= 0
                 error('Material refractive indices must be positive.');
@@ -616,6 +803,9 @@ classdef Bessel_Simulation_app < matlab.apps.AppBase
             if params.optics.lens1FocalLengthMm <= 0 || params.optics.lens2FocalLengthMm <= 0
                 error('Lens focal lengths must be positive.');
             end
+            if ~any(strcmp(params.optics.layoutMode, {'manual','telescopeLocked'}))
+                error('Lens layout must be manual or telescopeLocked.');
+            end
             if params.output.helicalOffsetStepDeg == 0
                 error('params.output.helicalOffsetStepDeg must be nonzero.');
             end
@@ -628,6 +818,9 @@ classdef Bessel_Simulation_app < matlab.apps.AppBase
             if params.output.referenceSliceIndex < 1
                 error('params.output.referenceSliceIndex must be at least 1.');
             end
+            % Resolve locked optics and validate arrays with the same planner as Run.
+            preflight = Bessel_Simulation_app_engine('plan',params);
+            params = preflight.params;
         end
 
         function populateControls(app, params)
@@ -653,8 +846,16 @@ classdef Bessel_Simulation_app < matlab.apps.AppBase
                     end
                 end
             end
+            app.ZControls.mode.Value = params.simulation.zSamplingMode;
+            app.ZControls.regions.Data = params.simulation.zRefinementRegionsMm;
+            app.ZControls.extra.Value = strjoin(arrayfun(@(z)sprintf('%.17g',z), ...
+                params.simulation.zExtraPlanesMm,'UniformOutput',false),', ');
+            app.ZControls.cap.Value = params.simulation.maxZPlanes;
+            app.ZSelectedRows = [];
+            app.zSamplingChanged();
             app.updateBeamQualityControlStates();
             app.updateBeamQualityDescription();
+            app.updateAxiconGeometryControlStates();
             app.updateAxiconControlStates();
             app.syncAxiconEquivalentControls();
             app.updateCheckerboardBesselControlStates();
@@ -662,7 +863,7 @@ classdef Bessel_Simulation_app < matlab.apps.AppBase
 
         function updateResultPreview(app, results)
             app.showImage(app.ResultAxes.slmPhase, angle(results.inputField), 'Phase on SLM', 'wrappedPhase');
-            app.showImage(app.ResultAxes.inputIntensity, app.resultInputIntensity(results), 'Input beam |E|^2', 'auto');
+            app.showImage(app.ResultAxes.inputIntensity, app.resultInputIntensity(results), 'Input after aperture |E|^2', 'auto');
             app.showImage(app.ResultAxes.angularSpectrum, app.resultAngularSpectrumIntensity(results), 'Angular spectrum |F|^2', 'auto');
             app.showImage(app.ResultAxes.checkerboardBesselPhase, angle(exp(1i * results.phase.checkerboardBessel)), 'Checker Bessel phase', 'wrappedPhase');
             app.showImage(app.ResultAxes.helicalPhase, results.phase.helical, 'Helical phase', 'auto');
@@ -674,13 +875,13 @@ classdef Bessel_Simulation_app < matlab.apps.AppBase
                 results.postprocess.zImageMm, ...
                 results.postprocess.yImageMm, ...
                 results.postprocess.crossSectionPeakPowerDensityLog, ...
-                'Center y-z peak power density log scale', results);
+                'Fixed x=0 y-z peak power density log scale', 'y (mm)', results);
 
             app.showCrossSection(app.ResultAxes.peakLinear, ...
                 results.postprocess.zImageMm, ...
                 results.postprocess.yImageMm, ...
                 results.postprocess.crossSectionPeakPowerDensityWPerMm2, ...
-                'Center y-z peak power density (W/mm^2)', results);
+                'Fixed x=0 y-z peak power density (W/mm^2)', 'y (mm)', results);
 
             ax = app.ResultAxes.onAxis;
             app.clearAxesForRedraw(ax);
@@ -693,7 +894,11 @@ classdef Bessel_Simulation_app < matlab.apps.AppBase
             title(ax, 'On-axis and slice-peak power density');
             xlabel(ax, 'z (mm)');
             ylabel(ax, 'W/mm^2');
-            xlim(ax, [min(results.postprocess.zImageMm), max(results.postprocess.zImageMm)]);
+            if numel(results.postprocess.zImageMm) == 1
+                xlim(ax,results.postprocess.zImageMm(1)+[-0.5,0.5]);
+            else
+                xlim(ax, [min(results.postprocess.zImageMm), max(results.postprocess.zImageMm)]);
+            end
             peakPowerDensity = max([results.postprocess.onAxisPeakPowerDensityWPerMm2(:); results.postprocess.slicePeakPowerDensityWPerMm2(:)]);
             if isfinite(peakPowerDensity) && peakPowerDensity > 0
                 ylim(ax, [0, peakPowerDensity * 1.5]);
@@ -729,16 +934,29 @@ classdef Bessel_Simulation_app < matlab.apps.AppBase
             app.applyValueColorbar(ax, data, scaleMode);
         end
 
-        function showCrossSection(app, ax, zValues, yValues, data, titleText, results)
+        function showCrossSection(app, ax, zValues, transverseValues, data, titleText, transverseLabel, results)
             app.clearAxesForRedraw(ax);
-            imagesc(ax, zValues, yValues, data);
+            if numel(zValues) > 2 && ...
+                    any(abs(diff(zValues)-diff(zValues(1:2))) > 32*eps(max(1,max(zValues))))
+                [zMesh,yMesh] = meshgrid(zValues,transverseValues);
+                surface(ax,zMesh,yMesh,zeros(size(data)),data,'EdgeColor','none','FaceColor','interp');
+                view(ax,2);
+            else
+                imagesc(ax, zValues, transverseValues, data);
+            end
+            view(ax,2);
+            ax.YDir = 'reverse';
             axis(ax, 'on');
             title(ax, titleText);
             xlabel(ax, 'z (mm)');
-            ylabel(ax, 'y (mm)');
+            ylabel(ax, transverseLabel);
             app.applyValueColorbar(ax, data, 'auto');
-            xlim(ax, [min(zValues), max(zValues)]);
-            ylim(ax, [min(yValues), max(yValues)]);
+            if numel(zValues) == 1
+                xlim(ax,zValues(1)+[-0.5,0.5]);
+            else
+                xlim(ax, [min(zValues), max(zValues)]);
+            end
+            ylim(ax, [min(transverseValues), max(transverseValues)]);
             app.plotActiveMarkers(ax, results);
         end
 
@@ -900,12 +1118,19 @@ classdef Bessel_Simulation_app < matlab.apps.AppBase
                     results.params.simulation.N, results.params.simulation.sizeMm, ...
                     results.params.simulation.zRangeMm, results.params.simulation.dzMm);
                 sprintf('Wavelength: %.12g nm', app.mmToNm(results.params.laser.wavelengthMm));
+                sprintf('Aperture: enabled=%d, radius=%.12g mm, transmission=%.6f%%', ...
+                    results.aperture.enabled, results.aperture.radiusMm, ...
+                    100 * results.aperture.transmission);
+                sprintf('Aperture power: incident=%.12g W, transmitted=%.12g W', ...
+                    results.aperture.incidentAveragePowerW, results.aperture.transmittedAveragePowerW);
                 sprintf('Axicon mode: %s', results.derived.axicon.mode);
+                sprintf('Axicon geometry: %s, normal angle: %.12g deg', ...
+                    results.derived.axicon.geometry, results.derived.axicon.orientationDeg);
                 sprintf('Axicon effective beta: %.12g deg, kr=%.12g rad/mm', ...
                     results.derived.axicon.coneAngleDeg, results.derived.axicon.krRadPerMm);
-                sprintf('Axicon radial period: %.12g mm (%.12g px)', ...
+                sprintf('Axicon phase period: %.12g mm (%.12g px)', ...
                     results.derived.axicon.radialPeriodMm, results.derived.axicon.radialPeriodPx);
-                sprintf('Axicon radial cycles center-to-edge: %.12g', ...
+                sprintf('Axicon phase cycles center-to-reference-edge: %.12g', ...
                     results.derived.axicon.radialCycles);
                 sprintf('Physical-equivalent fields: n=%.12g, alpha=%.12g deg', ...
                     results.derived.axicon.physicalIndex, results.derived.axicon.physicalBaseAngleDeg);
@@ -917,7 +1142,8 @@ classdef Bessel_Simulation_app < matlab.apps.AppBase
                     results.params.phase.checkerboardTc2, ...
                     results.params.phase.checkerboardBeta2Deg);
                 sprintf('Z slices: %d', numel(results.propagation.zValuesMm));
-                sprintf('Pulse peak power: %.12g W', results.derived.pulsePeakPowerW);
+                sprintf('Pulse peak power: incident=%.12g W, transmitted=%.12g W', ...
+                    results.aperture.incidentPulsePeakPowerW, results.aperture.transmittedPulsePeakPowerW);
                 sprintf('Laser beam M2: %.12g, model: %s (%s)', ...
                     results.derived.beam.qualityM2, results.derived.beam.qualityModelKey, ...
                     results.derived.beam.qualityModel);
@@ -925,9 +1151,10 @@ classdef Bessel_Simulation_app < matlab.apps.AppBase
                 sprintf('Effective Gaussian waist: %.12g mm, coherent phases: x=%.12g deg, y=%.12g deg', ...
                     results.derived.beam.effectiveWaistRadiusMm, ...
                     results.derived.beam.hgCoherentPhaseXDeg, results.derived.beam.hgCoherentPhaseYDeg);
-                sprintf('Optics M=%.12g, opticsM2=%.12g', ...
-                    results.derived.optics.M, results.derived.optics.M2);
-                sprintf('beta0=%.12g deg, beta1=%.12g deg, betaMaterial=%.12g deg', ...
+                sprintf('Nominal f2/f1=%.12g, afocal lens spacing=%d, mode=%s', ...
+                    results.derived.optics.M, results.derived.optics.isAfocalLayout, ...
+                    results.params.optics.layoutMode);
+                sprintf('beta0=%.12g deg, nominal beta1=%.12g deg, nominal betaMaterial=%.12g deg', ...
                     results.derived.optics.beta0Deg, results.derived.optics.beta1Deg, ...
                     results.derived.optics.betaMaterialDeg);
                 sprintf('Axicon focus length: %.12g mm (signed focus %.12g mm)', ...
@@ -936,10 +1163,72 @@ classdef Bessel_Simulation_app < matlab.apps.AppBase
                 sprintf('Center pixel: row=%d, col=%d, x=%.12g mm, y=%.12g mm', ...
                     results.postprocess.centerRowIndex, results.postprocess.centerColumnIndex, ...
                     results.postprocess.centerXMm, results.postprocess.centerYMm);
-                sprintf('On-axis max: %.12g W/mm^2 at z=%.12g mm', ...
+                sprintf('On-axis max over sampled planes: %.12g W/mm^2 at z=%.12g mm', ...
                     results.postprocess.onAxisMaxPeakPowerDensityWPerMm2, results.postprocess.onAxisMaxZMm);
-                sprintf('Slice-peak max: %.12g W/mm^2 at z=%.12g mm', ...
+                sprintf('ROI slice-peak max over sampled planes: %.12g W/mm^2 at z=%.12g mm', ...
                     results.postprocess.sliceMaxPeakPowerDensityWPerMm2, results.postprocess.sliceMaxZMm)};
+            plan = results.propagation.zPlan;
+            lines{end+1} = sprintf('Z sampling: %s, base %d, added %d, actual uniform=%d', ...
+                plan.mode,plan.basePlaneCount,plan.addedPlaneCount,plan.isUniformZ);
+            if ~isempty(plan.zSpacingMm)
+                lines{end+1} = sprintf('Actual z spacing: %.9g to %.9g mm',plan.minSpacingMm,plan.maxSpacingMm);
+            end
+            for k = 1:size(plan.requestedRegionsMm,1)
+                lines{end+1} = sprintf('Refinement region: %.9g to %.9g mm, dz <= %.9g mm', ...
+                    plan.requestedRegionsMm(k,:)); %#ok<AGROW>
+            end
+            if isfield(results.propagation,'diagnostics')
+                diagnostic = results.propagation.diagnostics;
+                lines = [lines; {
+                    sprintf('Backend: %s (scalar paraxial)',results.propagation.backend);
+                    sprintf('Focus ROI: %.6g mm, N=%d, dx=%.6g um', ...
+                        diagnostic.observationSizeMm, results.observationGrid.N, ...
+                        diagnostic.observationDxMm*1000);
+                    sprintf('ROI captured input-normalized power at final plane: %.3f%%', ...
+                        100*diagnostic.roiPowerFraction(end));
+                    sprintf('Source-window edge intensity fraction: %.3f%%', ...
+                        100*diagnostic.sourceEdgePowerFraction);
+                    sprintf('Final ROI edge intensity fraction: %.3f%%', ...
+                        100*diagnostic.edgePowerFraction(end));
+                    sprintf('Largest source phase step: %.3g rad',diagnostic.sourcePhaseStepRad);
+                    sprintf('Max free-space ASM spectral power removed: %.4f%%', ...
+                        100*diagnostic.maxAsmSpectralPowerRemovedFraction);
+                    sprintf('Estimated J0 first-zero radius: %.2f ROI pixels (afocal approximation)', ...
+                        diagnostic.estimatedBesselCorePixels);
+                    sprintf('Largest Collins input phase step: %.3g rad',diagnostic.largestInputPhaseStepRad);
+                    sprintf('Estimated working memory: %.2f GiB',diagnostic.estimatedWorkingGiB)}];
+                if diagnostic.edgePowerFraction(end) > 0.02
+                    lines{end+1} = 'ROI edge contains substantial light; enlarge Focus ROI size to inspect the outer field.';
+                end
+                if diagnostic.sourceEdgePowerFraction > 0.01
+                    lines{end+1} = 'Source window clips illuminated field; enlarge source size while keeping phase reference scales fixed.';
+                end
+                if isfinite(diagnostic.afocalSpectrumOver10DegFraction)
+                    lines{end+1} = sprintf('Afocal spectral proxy above 10 deg: %.3f%% at final plane, %.3f%% in air', ...
+                        100*diagnostic.afocalSpectrumOver10DegFraction, ...
+                        100*diagnostic.afocalAirSpectrumOver10DegFraction);
+                    if diagnostic.afocalSpectrumOver10DegFraction > 0.01 || ...
+                            diagnostic.afocalAirSpectrumOver10DegFraction > 0.01
+                        lines{end+1} = 'Some angular-spectrum power lies outside the paraxial range; validate against a nonparaxial model.';
+                    end
+                elseif diagnostic.maxRayAngleEstimateDeg > 10
+                    lines{end+1} = 'Conservative ray-angle bound exceeds 10 deg; scalar paraxial model needs validation.';
+                end
+                if diagnostic.sourcePhaseStepRad >= pi
+                    lines{end+1} = 'Source phase exceeds the sampling limit; increase source N before trusting the result.';
+                end
+                if diagnostic.maxAsmSpectralPowerRemovedFraction > 0.01
+                    lines{end+1} = 'Free-space band-limit removed significant power; enlarge the source/propagation window.';
+                end
+                if isfinite(diagnostic.estimatedBesselCorePixels) && ...
+                        diagnostic.estimatedBesselCorePixels < 3
+                    lines{end+1} = 'Bessel core is under-resolved in the ROI; increase Focus ROI samples.';
+                end
+            end
+            if results.params.optics.lens1Enabled && results.params.optics.lens2Enabled && ...
+                    ~results.derived.optics.isAfocalLayout
+                lines{end+1} = 'Lens spacing differs from f1+f2; the displayed focal-length ratio is not the actual beam scale.';
+            end
             app.SummaryTextArea.Value = lines;
         end
 
@@ -1019,6 +1308,7 @@ classdef Bessel_Simulation_app < matlab.apps.AppBase
                     app.ResetButton.Enable = 'on';
                 end
             end
+            app.updateZControlStates();
             drawnow limitrate;
         end
 
@@ -1036,7 +1326,19 @@ classdef Bessel_Simulation_app < matlab.apps.AppBase
         end
 
         function message = simulationEstimateMessage(app, params)
-            zSliceCount = numel(0:params.simulation.dzMm:params.simulation.zRangeMm);
+            preflight = Bessel_Simulation_app_engine('plan',params);
+            zSliceCount = preflight.zPlan.planeCount;
+            if strcmp(char(string(params.simulation.propagationMethod)), 'adaptiveCollins')
+                if isempty(preflight.memory)
+                    message = 'Input plane only; propagation disabled.';
+                else
+                    m = preflight.memory;
+                    message = sprintf('Z sampling: %s, %d planes (%d added); ROI stack %.3f GiB, estimated total %.3f / %.3f GiB.', ...
+                        preflight.zPlan.mode,zSliceCount,preflight.zPlan.addedPlaneCount, ...
+                        m.intensityStackGiB,m.totalGiB,m.budgetGiB);
+                end
+                return;
+            end
             if isfield(params.simulation, 'useBPM') && ~params.simulation.useBPM
                 zSliceCount = 1;
             end
@@ -1241,6 +1543,15 @@ classdef Bessel_Simulation_app < matlab.apps.AppBase
             end
         end
 
+        function axiconGeometryChanged(app)
+            app.updateAxiconGeometryControlStates();
+            geometryKey = app.controlKey('phase', 'axiconGeometry');
+            if isfield(app.Controls, geometryKey)
+                app.appendStatus(sprintf('Axicon geometry: %s', ...
+                    char(string(app.Controls.(geometryKey).Value))));
+            end
+        end
+
         function axiconParameterChanged(app)
             app.syncAxiconEquivalentControls();
         end
@@ -1273,6 +1584,20 @@ classdef Bessel_Simulation_app < matlab.apps.AppBase
                     app.Controls.(key).Enable = controlEnable;
                 end
             end
+        end
+
+        function updateAxiconGeometryControlStates(app)
+            geometryKey = app.controlKey('phase', 'axiconGeometry');
+            orientationKey = app.controlKey('phase', 'axiconOrientationDeg');
+            if ~isfield(app.Controls, geometryKey) || ~isfield(app.Controls, orientationKey)
+                return;
+            end
+
+            orientationEnable = 'off';
+            if strcmp(char(string(app.Controls.(geometryKey).Value)), 'linear1D')
+                orientationEnable = 'on';
+            end
+            app.Controls.(orientationKey).Enable = orientationEnable;
         end
 
         function updateAxiconControlStates(app)
@@ -1327,8 +1652,8 @@ classdef Bessel_Simulation_app < matlab.apps.AppBase
                 app.controlKey('phase', 'axiconRadialCycles');
                 app.controlKey('phase', 'axiconIndex');
                 app.controlKey('phase', 'axiconAngleDeg');
-                app.controlKey('simulation', 'N');
-                app.controlKey('simulation', 'sizeMm');
+                app.controlKey('phase', 'referenceRadiusMm');
+                app.controlKey('phase', 'referencePixelPitchMm');
                 app.controlKey('laser', 'wavelengthMm');
                 app.controlKey('material', 'backgroundIndex')};
             for index = 1:numel(requiredKeys)
@@ -1341,19 +1666,17 @@ classdef Bessel_Simulation_app < matlab.apps.AppBase
             cleanup = onCleanup(@()app.clearAxiconSyncFlag());
             try
                 mode = char(string(app.Controls.(app.controlKey('phase', 'axiconMode')).Value));
-                sampleCount = round(app.Controls.(app.controlKey('simulation', 'N')).Value);
-                gridSizeMm = app.Controls.(app.controlKey('simulation', 'sizeMm')).Value;
+                gridRadiusMm = app.Controls.(app.controlKey('phase', 'referenceRadiusMm')).Value;
+                gridPixelPitchMm = app.Controls.(app.controlKey('phase', 'referencePixelPitchMm')).Value;
                 wavelengthMm = app.nmToMm(app.Controls.(app.controlKey('laser', 'wavelengthMm')).Value);
                 backgroundIndex = app.Controls.(app.controlKey('material', 'backgroundIndex')).Value;
                 axiconIndex = app.Controls.(app.controlKey('phase', 'axiconIndex')).Value;
 
-                if sampleCount <= 0 || gridSizeMm <= 0 || wavelengthMm <= 0 || ...
+                if gridRadiusMm <= 0 || gridPixelPitchMm <= 0 || wavelengthMm <= 0 || ...
                         backgroundIndex <= 0 || axiconIndex <= 0
                     return;
                 end
 
-                gridPixelPitchMm = gridSizeMm / sampleCount;
-                gridRadiusMm = gridSizeMm / 2;
                 kBackground = 2 * pi * backgroundIndex / wavelengthMm;
                 [coneAngleRad, krRadPerMm] = app.resolveAxiconControlsToConeAndKr(mode, kBackground, gridPixelPitchMm, gridRadiusMm);
                 if ~isfinite(coneAngleRad) || ~isfinite(krRadPerMm) || ...
@@ -1434,6 +1757,10 @@ classdef Bessel_Simulation_app < matlab.apps.AppBase
             options = {'coneAngle', 'radialPeriodMm', 'radialPeriodPx', 'radialCycles', 'physicalEquivalent'};
         end
 
+        function options = axiconGeometryOptions(~)
+            options = {'circular', 'linear1D'};
+        end
+
         function options = beamQualityModelOptions(~)
             options = {'effectiveGaussian', 'coherentHG', 'incoherentHG'};
         end
@@ -1443,6 +1770,8 @@ classdef Bessel_Simulation_app < matlab.apps.AppBase
             syncPaths = {
                 'simulation.N';
                 'simulation.sizeMm';
+                'phase.referenceRadiusMm';
+                'phase.referencePixelPitchMm';
                 'laser.wavelengthMm';
                 'material.backgroundIndex';
                 'phase.axiconMode';
@@ -1487,16 +1816,34 @@ classdef Bessel_Simulation_app < matlab.apps.AppBase
                 case 'simulation.N'
                     description = 'Number of transverse samples. The computational plane is N x N; larger values improve resolution but increase runtime and memory use.';
                 case 'simulation.sizeMm'
-                    description = 'Physical width of the transverse simulation window, in mm. Larger values show a wider field; smaller values sample the center more densely.';
+                    description = 'Physical width of the source sampling window. Phase reference dimensions remain fixed when this is changed.';
+                case 'phase.referenceRadiusMm'
+                    description = 'Fixed physical radius used by axicon cycles, curved-beam reference length, and helical radial chirp.';
+                case 'phase.referencePixelPitchMm'
+                    description = 'Fixed physical reference pixel pitch for axicon radialPeriodPx and checkerboard tile size.';
                 case 'simulation.zRangeMm'
                     description = 'Total propagation distance along z, in mm. This controls how much axial evolution is simulated and exported.';
                 case 'simulation.dzMm'
-                    description = 'BPM propagation step size along z, in mm. Smaller values give more propagation detail but run more slowly.';
+                    description = 'Spacing of observation planes. Optical elements are applied at their exact z position in adaptive mode.';
+                case 'simulation.propagationMethod'
+                    description = 'adaptiveCollins evaluates each focused ROI directly from the full input field; legacyASM uses a fixed grid.';
+                case 'simulation.adaptiveOutputN'
+                    description = 'Number of pixels per axis in the focused observation ROI.';
+                case 'simulation.adaptiveOutputSizeMm'
+                    description = 'Focused observation width in mm; zero estimates it from the lens focal-length ratio.';
+                case 'simulation.maxWorkingGiB'
+                    description = 'Estimated maximum memory for the adaptive observation stack and CZT work arrays.';
+                case 'simulation.bandLimitASM'
+                    description = 'Apply a 2-D transfer-function sampling bound before the first lens and report how much spectrum is removed.';
+                case 'optics.layoutMode'
+                    description = 'manual keeps positions independent; telescopeLocked sets L2 at L1+f1+f2 and sample at L2+offset.';
+                case 'optics.sampleOffsetFromLens2Mm'
+                    description = 'Sample distance after L2 when telescopeLocked layout is selected.';
 
                 case 'laser.wavelengthMm'
                     description = 'Laser wavelength. It affects the wave number, phase maps, propagation kernel, and propagation scale inside the sample.';
                 case 'laser.powerW'
-                    description = 'Average laser power used for peak-power-density estimates in post-processing. It does not change the normalized field shape.';
+                    description = 'Average laser power before the aperture, used for peak-power-density estimates. A finite aperture reduces the transmitted power by its calculated transmission.';
                 case 'laser.repetitionRateHz'
                     description = 'Pulse repetition rate. At fixed average power, a higher repetition rate gives lower energy per pulse.';
                 case 'laser.pulseWidthS'
@@ -1518,24 +1865,30 @@ classdef Bessel_Simulation_app < matlab.apps.AppBase
                     description = 'Strength of the cubic Airy phase term. Set to 0 to disable the Airy phase.';
                 case 'phase.airyScaleMm'
                     description = 'Transverse scale of the Airy phase, in mm. This controls how quickly the cubic phase changes with position.';
+                case 'phase.apertureRadiusMm'
+                    description = 'Radius of a centered hard circular amplitude aperture at the SLM plane, in mm. Use 0 for fully open; outside a positive radius the complex field is set to zero.';
+                case 'phase.axiconGeometry'
+                    description = 'Selects circular phase variation in radius r or a one-dimensional biprism phase in |u| for light-sheet generation.';
+                case 'phase.axiconOrientationDeg'
+                    description = 'Normal direction u of the linear1D phase, in degrees. At 0 deg the phase varies along x and the light sheet extends in y-z.';
                 case 'phase.axiconMode'
-                    description = 'Selects which axicon parameter is active. The engine converts the selected definition to one radial phase slope and cone angle.';
+                    description = 'Selects which axicon parameter is active. The engine converts the selected definition to one transverse phase slope and cone angle.';
                 case 'phase.axiconConeAngleDeg'
                     description = 'Signed effective holographic axicon cone angle beta, in degrees. Zero disables the axicon radial slope; negative values reverse the radial phase direction.';
                 case 'phase.axiconRadialPeriodMm'
-                    description = 'Signed radial 2pi phase period of the SLM axicon, in mm. Use Inf for beta = 0; negative values reverse the radial phase direction.';
+                    description = 'Signed 2pi phase period along the active axicon coordinate, in mm. Use Inf for beta = 0; negative values reverse the phase direction.';
                 case 'phase.axiconRadialPeriodPx'
-                    description = 'Signed radial 2pi phase period in generated phase-map pixels. Use Inf for beta = 0; negative values reverse the radial phase direction.';
+                    description = 'Signed 2pi phase period along the active axicon coordinate, in generated phase-map pixels. Use Inf for beta = 0.';
                 case 'phase.axiconRadialCycles'
-                    description = 'Signed number of radial 2pi axicon phase cycles from the beam axis to the simulation-window radius rho=1. A value of 20 gives 20 center-to-edge radial periods.';
+                    description = 'Signed number of 2pi axicon phase cycles from the beam axis to the reference half-width of the simulation window.';
                 case 'phase.axiconIndex'
                     description = 'Refractive index of the equivalent physical axicon. Active only when axiconMode is physicalEquivalent.';
                 case 'phase.axiconAngleDeg'
                     description = 'Base angle alpha of the equivalent physical axicon, in degrees. Active only when axiconMode is physicalEquivalent.';
                 case 'phase.curvedMaxShiftXMm'
-                    description = 'Target x-direction lateral shift at the end of the curved Bessel trajectory. Set x and y shifts to 0 to disable it; nonzero values require beta not equal to 0.';
+                    description = 'Target x-direction lateral shift at the end of the curved Bessel trajectory. Supported only for circular geometry; nonzero values require beta not equal to 0.';
                 case 'phase.curvedMaxShiftYMm'
-                    description = 'Target y-direction lateral shift at the end of the curved Bessel trajectory. Set x and y shifts to 0 to disable it; nonzero values require beta not equal to 0.';
+                    description = 'Target y-direction lateral shift at the end of the curved Bessel trajectory. Supported only for circular geometry; nonzero values require beta not equal to 0.';
                 case 'phase.compensationPhase'
                     description = 'Extra compensation phase hook. It is currently applied as an additional global phase term.';
                 case 'phase.vortexCharge'
@@ -1588,7 +1941,9 @@ classdef Bessel_Simulation_app < matlab.apps.AppBase
                     description = 'Material damage threshold, in W/m^2. It is used as a reference threshold line in result plots.';
 
                 case 'output.write3DIntensity'
-                    description = 'Exports the 3D intensity stack as a multipage TIFF. If BPM is off, only one z=0 slice is available.';
+                    description = 'Exports an 8-bit display TIFF and a JSON file with the physical x, y, z coordinates.';
+                case 'output.writeRawIntensity'
+                    description = 'Exports native floating-point intensity and physical x, y, z axes to MAT for quantitative analysis.';
                 case 'output.writeAllPhase'
                     description = 'Exports the total SLM phase bitmap after all enabled phase terms have been combined.';
                 case 'output.writeHelicalPhase'
@@ -1703,7 +2058,7 @@ classdef Bessel_Simulation_app < matlab.apps.AppBase
                 for fieldIndex = 1:numel(fields)
                     fieldName = fields{fieldIndex};
                     value = params.(groupName).(fieldName);
-                    if isnumeric(value)
+                    if isnumeric(value) && ~any(strcmp(fieldName,{'zRefinementRegionsMm','zExtraPlanesMm'}))
                         paths(end + 1, :) = {groupName, fieldName}; %#ok<AGROW>
                     end
                 end

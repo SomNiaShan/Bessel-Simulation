@@ -4,6 +4,7 @@
 slprj/
 
 # Generated outputs
+*.mltbx
 *.tif
 *.tiff
 *.bmp
